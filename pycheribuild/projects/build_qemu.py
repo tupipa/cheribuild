@@ -68,6 +68,8 @@ class BuildQEMUBase(AutotoolsProject):
 
         cls.gui = cls.add_bool_option("gui", show_help=True, default=False,
                                     help="Build a the graphical UI bits for QEMU (SDL,VNC)")
+        cls.mem_color = cls.add_bool_option("mem-color", show_help=True, default=False,
+                                    help="enable memory color build option in QEMU")
         cls.qemu_targets = cls.add_config_option("targets",
             show_help=True, help="Build QEMU for the following targets", default=cls.default_targets)
         cls.prefer_full_lto_over_thin_lto = cls.add_bool_option("full-lto", show_help=False, default=True,
@@ -258,6 +260,8 @@ class BuildQEMU(BuildQEMUBase):
             self.COMMON_FLAGS.append("-DCHERI_UNALIGNED")
         if self.statistics:
             self.COMMON_FLAGS.append("-DDO_CHERI_STATISTICS=1")
+        if self.mem_color:
+            self.COMMON_FLAGS.append("-DMEM_COLOR")
 
     def setup(self):
         super().setup()
