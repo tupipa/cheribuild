@@ -70,6 +70,8 @@ class BuildQEMUBase(AutotoolsProject):
                                     help="Build a the graphical UI bits for QEMU (SDL,VNC)")
         cls.mem_color = cls.add_bool_option("mem-color", show_help=True, default=False,
                                     help="enable memory color build option in QEMU")
+        cls.simple_trace = cls.add_bool_option("simple-trace", show_help=True, default=False,
+                                    help="enable the simple trace backend in QEMU")
         cls.qemu_targets = cls.add_config_option("targets",
             show_help=True, help="Build QEMU for the following targets", default=cls.default_targets)
         cls.prefer_full_lto_over_thin_lto = cls.add_bool_option("full-lto", show_help=False, default=True,
@@ -102,6 +104,9 @@ class BuildQEMUBase(AutotoolsProject):
                                          print_verbose_only=True, runInPretendMode=True).stdout.decode("utf-8").strip()
             self.COMMON_FLAGS.extend(shlex.split(glib_includes))
 
+        if self.simple_trace:
+            self..configureArgs.extend(["--enable-trace-backends=simple"])
+        
         # Disable some more unneeded things (we don't usually need the GUI frontends)
         if not self.gui:
             self.configureArgs.extend(["--disable-vnc", "--disable-sdl", "--disable-gtk", "--disable-opengl"])
