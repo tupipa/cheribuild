@@ -105,7 +105,7 @@ class BuildQEMUBase(AutotoolsProject):
             self.COMMON_FLAGS.extend(shlex.split(glib_includes))
 
         if self.simple_trace:
-            self..configureArgs.extend(["--enable-trace-backends=simple"])
+            self.configureArgs.extend(["--enable-trace-backends=simple"])
         
         # Disable some more unneeded things (we don't usually need the GUI frontends)
         if not self.gui:
