@@ -74,7 +74,7 @@ class QemuOptions:
             return ["-drive", "if=none,file=" + str(image) + ",id=drv,format=raw",
                     "-device", device_kind + ",drive=drv"]
         else:
-            return ["-drive", "file=" + str(image) + ",format=raw,index=0,media=disk"]
+            return ["-drive", "file=" + str(image) + ",format=qcow2,index=0,media=disk"]
 
     def can_use_virtio_network(self):
         # We'd like to use virtio everwhere, but FreeBSD doesn't like it on BE mips.
