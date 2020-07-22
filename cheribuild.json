@@ -1,0 +1,26 @@
+{
+ "skip-buildworld": false,
+ "skip-update": true,
+ "skip-configure": false,
+ "source-root": "/root/cheri",
+ "output-root": "/root/cheri/output",
+ "build-root": "/root/cheri/build",
+ "make-jobs": 4,
+ "cheribsd-purecap": {
+   "build-tests": true
+ },
+ "qemu": { 
+   "use-smbd":false,
+   "mem-color": true,
+   "simple-trace": true
+ } ,
+ "run": {
+   "monitor-over-telnet": 4444,
+   "ssh-forwarding-port": 8022
+ },
+ "run-purecap": {
+   "monitor-over-telnet": 4445,
+   "ssh-forwarding-port": 8023
+ }
+ 
+}
