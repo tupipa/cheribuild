@@ -28,21 +28,24 @@
 # SUCH DAMAGE.
 #
 
-from .project import CMakeProject, BuildType, GitRepository, CheriConfig
+from .project import BuildType, CheriConfig, CMakeProject, GitRepository
 from ..config.compilation_targets import CompilationTargets
+from ..config.loader import ComputedDefaultValue
 
 
 class BuildCheriOS(CMakeProject):
     dependencies = ["cherios-llvm", "makefs-linux"]
     default_build_type = BuildType.DEBUG
     repository = GitRepository("https://github.com/CTSRD-CHERI/cherios.git", default_branch="master")
-    _default_install_dir_fn = lambda config, cls: config.outputRoot / ("cherios" + config.mips_cheri_bits_str)
+    _default_install_dir_fn = ComputedDefaultValue(
+        function=lambda config, cls: config.output_root / ("cherios" + config.mips_cheri_bits_str),
+        as_string="<OUTPUT_ROOT>/cherios128")
     needs_sysroot = False
     supported_architectures = [CompilationTargets.CHERIOS_MIPS_PURECAP]
 
     @classmethod
-    def setup_config_options(cls, useDefaultSysroot=True):
-        super().setup_config_options()
+    def setup_config_options(cls, **kwargs):
+        super().setup_config_options(**kwargs)
         cls.smp_cores = cls.add_config_option("smp-cores", default=1, kind=int)
         cls.build_net = cls.add_bool_option("build-net", default=False)
 

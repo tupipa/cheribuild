@@ -28,12 +28,12 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
-from .crosscompileproject import CompilationTargets, CrossCompileAutotoolsProject, DefaultInstallDir, GitRepository
+from .crosscompileproject import (CrossCompileAutotoolsProject, DefaultInstallDir, FettProjectMixin, GitRepository)
 
 
 class BuildZlib(CrossCompileAutotoolsProject):
     # Just add add the FETT target below for now.
-    doNotAddToTargets = True
+    do_not_add_to_targets = True
 
     repository = GitRepository("https://github.com/CTSRD-CHERI/zlib.git")
 
@@ -51,11 +51,9 @@ class BuildZlib(CrossCompileAutotoolsProject):
             # If we don't set this, the build will use the macOS host libtool instead of llvm-ar and then complain
             # because the .o files are not macOS object files.
             self.add_configure_vars(uname=self.target_info.cmake_system_name,
-                AR=self.sdk_bindir / "llvm-ar", RANLIB=self.sdk_bindir / "llvm-ranlib")
+                                    AR=self.sdk_bindir / "llvm-ar", RANLIB=self.sdk_bindir / "llvm-ranlib")
 
 
-class BuildFettZlib(BuildZlib):
+class BuildFettZlib(FettProjectMixin, BuildZlib):
     project_name = "fett-zlib"
-    default_architecture = CompilationTargets.FETT_DEFAULT_ARCHITECTURE
-    path_in_rootfs = "/fett"
     repository = GitRepository("https://github.com/CTSRD-CHERI/zlib.git", default_branch="fett")

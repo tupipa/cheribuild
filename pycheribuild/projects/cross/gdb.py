@@ -29,10 +29,11 @@
 #
 import sys
 import typing
+from pathlib import Path
 
 from .crosscompileproject import (CheriConfig, CompilationTargets, CrossCompileAutotoolsProject, DefaultInstallDir,
-                                  GitRepository, Linkage, MakeCommandKind, Path)
-from ...utils import OSInfo, runCmd, statusUpdate
+                                  GitRepository, Linkage, MakeCommandKind)
+from ...utils import OSInfo, run_command, status_update
 
 
 class TemporarilyRemoveProgramsFromSdk(object):
@@ -42,17 +43,17 @@ class TemporarilyRemoveProgramsFromSdk(object):
         self.sdk_bindir = sdk_bindir
 
     def __enter__(self):
-        statusUpdate('Temporarily moving', self.programs, "from", self.sdk_bindir)
-        for l in self.programs:
-            if (self.sdk_bindir / l).exists():
-                runCmd("mv", "-f", l, l + ".backup", cwd=self.sdk_bindir, print_verbose_only=True)
+        status_update('Temporarily moving', self.programs, "from", self.sdk_bindir)
+        for prog in self.programs:
+            if (self.sdk_bindir / prog).exists():
+                run_command("mv", "-f", prog, prog + ".backup", cwd=self.sdk_bindir, print_verbose_only=True)
         return self
 
     def __exit__(self, *exc):
-        statusUpdate('Restoring', self.programs, "in", self.sdk_bindir)
-        for l in self.programs:
-            if (self.sdk_bindir / (l + ".backup")).exists() or self.config.pretend:
-                runCmd("mv", "-f", l + ".backup", l, cwd=self.sdk_bindir, print_verbose_only=True)
+        status_update('Restoring', self.programs, "in", self.sdk_bindir)
+        for prog in self.programs:
+            if (self.sdk_bindir / (prog + ".backup")).exists() or self.config.pretend:
+                run_command("mv", "-f", prog + ".backup", prog, cwd=self.sdk_bindir, print_verbose_only=True)
         return False
 
 
@@ -85,10 +86,10 @@ class BuildGDB(CrossCompileAutotoolsProject):
 
     def setup(self):
         super().setup()
-        install_root = self.installDir if self.compiling_for_host() else self.installPrefix
+        install_root = self.install_dir if self.compiling_for_host() else self.install_prefix
         # See https://github.com/bsdjhb/kdbg/blob/master/gdb/build
         # ./configure flags
-        self.configureArgs.extend([
+        self.configure_args.extend([
             "--disable-nls",
             "--enable-tui",
             "--disable-ld",  # "--enable-ld",
@@ -107,10 +108,11 @@ class BuildGDB(CrossCompileAutotoolsProject):
 
         # BUILD the gui:
         if False and self.compiling_for_host():
-            self.configureArgs.append("--enable-gdbtk")
+            self.configure_args.append("--enable-gdbtk")
             # if OSInfo.IS_MAC:
-            # self.configureArgs.append("--with-tcl=/usr/local/opt/tcl-tk/lib")
-            # self.configureEnvironment["PKG_CONFIG_PATH"] = "/usr/local/opt/tcl-tk/lib/pkgconfig:/usr/local/lib/pkgconfig"
+            # self.configure_args.append("--with-tcl=/usr/local/opt/tcl-tk/lib")
+            # self.configure_environment["PKG_CONFIG_PATH"] =
+            # "/usr/local/opt/tcl-tk/lib/pkgconfig:/usr/local/lib/pkgconfig"
 
         # extra ./configure environment variables:
         # compile flags
@@ -127,20 +129,21 @@ class BuildGDB(CrossCompileAutotoolsProject):
         self.cross_warning_flags.append("-Wno-error=implicit-function-declaration")
         self.cross_warning_flags.append("-Wno-error=format")
         self.cross_warning_flags.append("-Wno-error=incompatible-pointer-types")
-        self.configureArgs.append("--enable-targets=all")
+        self.configure_args.append("--enable-targets=all")
         if self.compiling_for_host():
             self.LDFLAGS.append("-L/usr/local/lib")
-            self.configureArgs.append("--with-expat")
-            self.configureArgs.append("--with-python=" + str(sys.executable))
+            self.configure_args.append("--with-expat")
+            self.configure_args.append("--with-python=" + str(sys.executable))
         else:
-            self.configureArgs.extend(["--without-python", "--without-expat", "--without-libunwind-ia64"])
-            self.configureEnvironment.update(gl_cv_func_gettimeofday_clobber="no",
-                                             lt_cv_sys_max_cmd_len="262144",
-                                             # The build system run CC without any flags to detect dependency style...
-                                             # (ZW_PROG_COMPILER_DEPENDENCIES([CC])) -> for gcc3 mode which seems correct
-                                             am_cv_CC_dependencies_compiler_type="gcc3",
-                                             MAKEINFO="/bin/false"
-                                             )
+            self.configure_args.extend(["--without-python", "--without-expat", "--without-libunwind-ia64"])
+            self.configure_environment.update(gl_cv_func_gettimeofday_clobber="no",
+                                              lt_cv_sys_max_cmd_len="262144",
+                                              # The build system run CC without any flags to detect dependency style...
+                                              # (ZW_PROG_COMPILER_DEPENDENCIES([CC])) -> for gcc3 mode which seems
+                                              # correct
+                                              am_cv_CC_dependencies_compiler_type="gcc3",
+                                              MAKEINFO="/bin/false"
+                                              )
             self.COMMON_FLAGS.append("-static")  # seems like LDFLAGS is not enough
             # XXX: libtool wants to strip -static from some linker invocations,
             #      and because sbrk's availability is determined based on
@@ -153,14 +156,14 @@ class BuildGDB(CrossCompileAutotoolsProject):
             # Currently there are a lot of `undefined symbol 'elf_version'`, etc errors
             # Add -lelf to the linker command line until the source is fixed
             self.LDFLAGS.append("-lelf")
-            self.configureEnvironment.update(CONFIGURED_M4="m4", CONFIGURED_BISON="byacc", TMPDIR="/tmp", LIBS="")
+            self.configure_environment.update(CONFIGURED_M4="m4", CONFIGURED_BISON="byacc", TMPDIR="/tmp", LIBS="")
         if self.make_args.command == "gmake":
-            self.configureEnvironment["MAKE"] = "gmake"
+            self.configure_environment["MAKE"] = "gmake"
 
-        self.configureEnvironment["CC_FOR_BUILD"] = str(self.host_CC)
-        self.configureEnvironment["CXX_FOR_BUILD"] = str(self.host_CXX)
-        self.configureEnvironment["CFLAGS_FOR_BUILD"] = "-g"
-        self.configureEnvironment["CXXFLAGS_FOR_BUILD"] = "-g"
+        self.configure_environment["CC_FOR_BUILD"] = str(self.host_CC)
+        self.configure_environment["CXX_FOR_BUILD"] = str(self.host_CXX)
+        self.configure_environment["CFLAGS_FOR_BUILD"] = "-g -fcommon"
+        self.configure_environment["CXXFLAGS_FOR_BUILD"] = "-g -fcommon"
 
         if not self.compiling_for_host():
             self.add_configure_env_arg("AR", self.sdk_bindir / "ar")
@@ -169,35 +172,35 @@ class BuildGDB(CrossCompileAutotoolsProject):
 
         # Some of the configure scripts are invoked lazily (during the make invocation instead of from ./configure)
         # Therefore we need to set all the enviroment variables when compiling, too.
-        self.make_args.set_env(**self.configureEnvironment)
+        self.make_args.set_env(**self.configure_environment)
 
     def configure(self, **kwargs):
         if self.compiling_for_host() and OSInfo.IS_MAC:
-            self.configureEnvironment.clear()
-            print(self.configureArgs)
-            # self.configureArgs.clear()
+            self.configure_environment.clear()
+            print(self.configure_args)
+            # self.configure_args.clear()
         super().configure()
 
     def compile(self, **kwargs):
         with TemporarilyRemoveProgramsFromSdk(["as", "ld", "objcopy", "objdump"], self.config,
-                                              self.installDir):
+                                              self.install_dir):
             # also install objdump
-            self.run_make(make_target="all-binutils", cwd=self.buildDir)
-            self.run_make(make_target="all-gdb", cwd=self.buildDir)
+            self.run_make(make_target="all-binutils", cwd=self.build_dir)
+            self.run_make(make_target="all-gdb", cwd=self.build_dir)
 
     def install(self, **kwargs):
-        self.runMakeInstall(target="install-gdb")
+        self.run_make_install(target="install-gdb")
         if self.target_info.is_cheribsd() and self.compiling_for_cheri_hybrid():
             # If we are building a hybrid GDB, also install it to the purecap rootfs
-            make_install_env = self.makeInstallEnv.copy()
+            make_install_env = self.make_install_env.copy()
             purecap_target = self.crosscompile_target.get_cheri_purecap_target()
             rootfs_project = self.target_info.get_rootfs_project(xtarget=purecap_target)
-            purecap_rootfs = rootfs_project.installDir
+            purecap_rootfs = rootfs_project.install_dir
             if (purecap_rootfs / "usr").exists():
                 self.info("Also installing to", purecap_rootfs)
                 assert "DESTDIR" in make_install_env, "DESTDIR must be set in install"
                 make_install_env["DESTDIR"] = str(purecap_rootfs)
-                self.runMakeInstall(target="install-gdb", make_install_env=make_install_env)
+                self.run_make_install(target="install-gdb", make_install_env=make_install_env)
             else:
                 self.info("Not installing to purecap rootfs", purecap_rootfs, "since it doesn't exist")
         # Install the binutils prefixed with g (like homebrew does it on MacOS)
@@ -206,10 +209,10 @@ class BuildGDB(CrossCompileAutotoolsProject):
         # TODO: also build upstream ld.bfd?
         if self.compiling_for_host():
             binutils = ("objdump", "objcopy", "addr2line", "readelf", "ar", "ranlib", "size", "strings")
-            bindir = self.installDir / "bin"
+            bindir = self.install_dir / "bin"
             for util in binutils:
-                self.installFile(self.buildDir / "binutils" / util, bindir / ("g" + util))
+                self.install_file(self.build_dir / "binutils" / util, bindir / ("g" + util))
             # nm and c++filt have a different name in the build dir:
-            self.installFile(self.buildDir / "binutils/cxxfilt", bindir / "gc++filt")
-            self.installFile(self.buildDir / "binutils/nm-new", bindir / "gnm")
-            self.installFile(self.buildDir / "binutils/strip-new", bindir / "gstrip")
+            self.install_file(self.build_dir / "binutils/cxxfilt", bindir / "gc++filt")
+            self.install_file(self.build_dir / "binutils/nm-new", bindir / "gnm")
+            self.install_file(self.build_dir / "binutils/strip-new", bindir / "gstrip")

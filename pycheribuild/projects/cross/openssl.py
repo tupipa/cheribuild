@@ -30,12 +30,12 @@
 #
 import shutil
 
-from .crosscompileproject import CompilationTargets, CrossCompileProject, DefaultInstallDir, GitRepository
+from .crosscompileproject import (CrossCompileProject, DefaultInstallDir, FettProjectMixin, GitRepository)
 
 
 class BuildOpenSSL(CrossCompileProject):
     # Just add the FETT target below for now.
-    doNotAddToTargets = True
+    do_not_add_to_targets = True
     build_in_source_dir = True
 
     repository = GitRepository("https://github.com/CTSRD-CHERI/openssl.git")
@@ -45,24 +45,22 @@ class BuildOpenSSL(CrossCompileProject):
 
     def setup(self):
         super().setup()
-        self.configureCommand = shutil.which("perl")
+        self.configure_command = shutil.which("perl")
         self.set_configure_prog_with_args("CC", self.CC, self.default_compiler_flags + ["-fuse-ld=lld"])
         self.add_configure_env_arg("AR", self.target_info.ar)
-        self.configureArgs.append(self.sourceDir / "Configure")
-        self.configureArgs.append("BSD-generic64")
-        self.configureArgs.append("-shared")
-        self.configureArgs.append("--install-prefix=" + str(self.destdir))
+        self.configure_args.append(self.source_dir / "Configure")
+        self.configure_args.append("BSD-generic64")
+        self.configure_args.append("-shared")
+        self.configure_args.append("--install-prefix=" + str(self.destdir))
         if not self._xtarget.is_native():
-            self.configureArgs.append("--openssldir=" + str(self._installPrefix))
+            self.configure_args.append("--openssldir=" + str(self._install_prefix))
 
     def compile(self, **kwargs):
         # link errors at -j40
         super().compile(parallel=False)
 
 
-class BuildFettOpenSSL(BuildOpenSSL):
+class BuildFettOpenSSL(FettProjectMixin, BuildOpenSSL):
     project_name = "fett-openssl"
-    path_in_rootfs = "/fett"
-    default_architecture = CompilationTargets.FETT_DEFAULT_ARCHITECTURE
     repository = GitRepository("https://github.com/CTSRD-CHERI/openssl.git",
                                default_branch="fett")

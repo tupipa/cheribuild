@@ -69,7 +69,7 @@ def add_args(parser: argparse.ArgumentParser):
     parser.add_argument("--ld-preload-path", required=False, default=None)
 
 
-def setup_juliet_test_environment(qemu: boot_cheribsd.CheriBSDInstance, args: argparse.Namespace):
+def setup_juliet_test_environment(qemu: boot_cheribsd.CheriBSDInstance, _: argparse.Namespace):
     boot_cheribsd.set_ld_library_path_with_sysroot(qemu)
 
 
@@ -79,12 +79,12 @@ def run_juliet_tests(qemu: boot_cheribsd.CheriBSDInstance, args: argparse.Namesp
 
         # hack until libcaprevoke is always present in cheribsd and can be added to the disk image via METALOG:
         # copy it into the runtime linker's search path from the sysroot
-        boot_cheribsd.checked_run_cheribsd_command(qemu, "cp /sysroot/usr/libcheri/libcheri_caprevoke* /usr/libcheri")
+        qemu.checked_run("cp /sysroot/usr/libcheri/libcheri_caprevoke* /usr/libcheri")
 
         try:
             shutil.copy2(args.ld_preload_path, args.build_dir)
-        except:
-            boot_cheribsd.failure("could not copy shared library for preload")
+        except Exception as e:
+            boot_cheribsd.failure("could not copy shared library for preload: ", e)
             return False
         preload_path = Path(args.ld_preload_path)
         run_command = "/build/juliet-run.sh {} {}".format(args.testcase_timeout, "/build/" + preload_path.name)
@@ -93,7 +93,7 @@ def run_juliet_tests(qemu: boot_cheribsd.CheriBSDInstance, args: argparse.Namesp
         run_command = "/build/juliet-run.sh {}".format(args.testcase_timeout)
 
     build_dir = Path(args.build_dir)
-    boot_cheribsd.checked_run_cheribsd_command(qemu, run_command, ignore_cheri_trap=True, timeout=60000)
+    qemu.checked_run(run_command, ignore_cheri_trap=True, timeout=60000)
     xml = junitparser.JUnitXml()
     output_to_junit_suite(xml, build_dir / "bin" / "good.run", "good", True)
     output_to_junit_suite(xml, build_dir / "bin" / "bad.run", "bad", False)

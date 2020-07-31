@@ -29,10 +29,11 @@
 # SUCH DAMAGE.
 #
 import tempfile
+from pathlib import Path
 
 from .crosscompileproject import (CheriConfig, CompilationTargets, CrossCompileAutotoolsProject, DefaultInstallDir,
-                                  GitRepository, MakeCommandKind, Path)
-from ...utils import commandline_to_str, runCmd
+                                  GitRepository, MakeCommandKind)
+from ...utils import commandline_to_str
 
 
 class BuildNewlib(CrossCompileAutotoolsProject):
@@ -49,11 +50,12 @@ class BuildNewlib(CrossCompileAutotoolsProject):
     _autotools_add_default_compiler_args = False
 
     cross_install_dir = DefaultInstallDir.SYSROOT
-    supported_architectures = [CompilationTargets.BAREMETAL_NEWLIB_MIPS64,
-                               CompilationTargets.BAREMETAL_NEWLIB_MIPS64_PURECAP,
-                               CompilationTargets.BAREMETAL_NEWLIB_RISCV64,
-                               CompilationTargets.BAREMETAL_NEWLIB_RISCV64_PURECAP] + \
-                               CompilationTargets.ALL_SUPPORTED_RTEMS_TARGETS
+    supported_architectures = \
+        [CompilationTargets.BAREMETAL_NEWLIB_MIPS64,
+         CompilationTargets.BAREMETAL_NEWLIB_MIPS64_PURECAP,
+         CompilationTargets.BAREMETAL_NEWLIB_RISCV64,
+         CompilationTargets.BAREMETAL_NEWLIB_RISCV64_PURECAP] + CompilationTargets.ALL_SUPPORTED_RTEMS_TARGETS
+
     # build_in_source_dir = True  # we have to build in the source directory
 
     @classmethod
@@ -63,12 +65,12 @@ class BuildNewlib(CrossCompileAutotoolsProject):
 
     def __init__(self, config: CheriConfig):
         super().__init__(config)
-        self._installPrefix = self._installPrefix.parent  # newlib install already appends the triple
-        self._installDir = self._installDir.parent  # newlib install already appends the triple
-        self.verbose_print("installDir=", self.installDir, "_installPrefix=", self._installPrefix, "_installDir=",
-            self._installDir, "dest=", self.destdir, "real=", self.real_install_root_dir)
-        #self.configureCommand = Path("/this/path/does/not/exist")
-        self.configureCommand = self.sourceDir / "configure"
+        self._install_prefix = self._install_prefix.parent  # newlib install already appends the triple
+        self._install_dir = self._install_dir.parent  # newlib install already appends the triple
+        self.verbose_print("install_dir=", self.install_dir, "_install_prefix=", self._install_prefix, "_install_dir=",
+                           self._install_dir, "dest=", self.destdir, "real=", self.real_install_root_dir)
+        # self.configure_command = Path("/this/path/does/not/exist")
+        self.configure_command = self.source_dir / "configure"
         # FIXME: how can I force it to run a full configure step (this is needed because it runs the newlib configure
         # step during make all rather than during ./configure
         self.make_args.env_vars["newlib_cv_ldbl_eq_dbl"] = "yes"
@@ -76,16 +78,16 @@ class BuildNewlib(CrossCompileAutotoolsProject):
         self.COMMON_FLAGS.extend(["--sysroot", "/this/path/does/not/exist"])
 
     # def install(self, **kwargs):
-    #     # self.runMakeInstall(cwd=self.buildDir / "newlib")
-    #     self.runMakeInstall(cwd=self.buildDir / "libgloss")
+    #     # self.run_make_install(cwd=self.build_dir / "newlib")
+    #     self.run_make_install(cwd=self.build_dir / "libgloss")
 
     # def compile(self, **kwargs):
-    #     # super().compile(cwd=self.buildDir / "newlib")
+    #     # super().compile(cwd=self.build_dir / "newlib")
     #     self.make_args.env_vars["MULTILIB"] = self.target_cflags + " -mabicalls"
-    #     super().compile(cwd=self.buildDir / "libgloss")
+    #     super().compile(cwd=self.build_dir / "libgloss")
 
-    def needsConfigure(self):
-        return not (self.buildDir / "Makefile").exists()
+    def needs_configure(self):
+        return not (self.build_dir / "Makefile").exists()
 
     def add_configure_vars(self, **kwargs):
         # newlib is annoying, we need to pass all these arguments to make as well because it won't run all
@@ -125,12 +127,12 @@ class BuildNewlib(CrossCompileAutotoolsProject):
             )
 
         if self.target_info.target.is_riscv(include_purecap=True):
-            self.configureArgs.extend([
+            self.configure_args.extend([
                 "--disable-libgloss"
                 ])
 
         if self.target_info.is_baremetal():
-            self.configureArgs.extend([
+            self.configure_args.extend([
                 "--enable-malloc-debugging",
                 "--enable-newlib-long-time_t",  # we want time_t to be long and not int!
                 "--enable-newlib-io-c99-formats",
@@ -156,37 +158,37 @@ class BuildNewlib(CrossCompileAutotoolsProject):
                 "--enable-serial-host-configure",
                 ])
         elif self.target_info.is_rtems():
-            self.configureArgs.extend([
+            self.configure_args.extend([
                 "--enable-newlib-io-c99-formats",
                 "--disable-libstdcxx"  # not sure if this is needed
                 ])
 
         if self.locale_support:
             # needed for locale support
-            self.configureArgs.append("--enable-newlib-mb")
-            self.configureArgs.append("--enable-newlib-iconv")
+            self.configure_args.append("--enable-newlib-mb")
+            self.configure_args.append("--enable-newlib-iconv")
         else:
-            self.configureArgs.append("--disable-newlib-mb")
-            self.configureArgs.append("--disable-newlib-iconv")
+            self.configure_args.append("--disable-newlib-mb")
+            self.configure_args.append("--disable-newlib-iconv")
 
-        # won't work: self.configureArgs.append("--host=" + self.target_info.target_triple)
-        self.configureArgs.append("--target=" + self.target_info.target_triple)
-        self.configureArgs.append("--disable-multilib")
-        self.configureArgs.append("--with-newlib")
+        # won't work: self.configure_args.append("--host=" + self.target_info.target_triple)
+        self.configure_args.append("--target=" + self.target_info.target_triple)
+        self.configure_args.append("--disable-multilib")
+        self.configure_args.append("--with-newlib")
         super().configure()
 
     def install(self, **kwargs):
         super().install(**kwargs)
         if self.compiling_for_cheri():
             # create some symlinks to make the current CMakeProject infrastructure happy
-            root_dir = self.installDir / self.target_info.target_triple
+            root_dir = self.install_dir / self.target_info.target_triple
             self.makedirs(root_dir / "usr")
-            self.createSymlink(root_dir / "lib", root_dir / "usr/libcheri")
-            self.createSymlink(root_dir / "lib", root_dir / "libcheri")
+            self.create_symlink(root_dir / "lib", root_dir / "usr/libcheri")
+            self.create_symlink(root_dir / "lib", root_dir / "libcheri")
 
     def run_tests(self):
         with tempfile.TemporaryDirectory(prefix="cheribuild-" + self.target + "-") as td:
-            self.writeFile(Path(td, "main.c"), contents="""
+            self.write_file(Path(td, "main.c"), contents="""
 #include <stdio.h>
 int main(int argc, char** argv) {
   for (int i = 0; i < argc; i++) {
@@ -198,9 +200,9 @@ int main(int argc, char** argv) {
             # FIXME: CHERI helloworld
             compiler_flags = self.target_info.essential_compiler_and_linker_flags + self.COMMON_FLAGS + [
                 "-Wl,-T,qemu-malta.ld", "-Wl,-verbose", "--sysroot=" + str(self.sdk_sysroot)]
-            runCmd([self.sdk_bindir / "clang", "main.c", "-o", test_exe] + compiler_flags + ["-###"], cwd=td)
-            runCmd([self.sdk_bindir / "clang", "main.c", "-o", test_exe] + compiler_flags, cwd=td)
-            runCmd(self.sdk_bindir / "llvm-readobj", "-h", test_exe)
+            self.run_cmd([self.sdk_bindir / "clang", "main.c", "-o", test_exe] + compiler_flags + ["-###"], cwd=td)
+            self.run_cmd([self.sdk_bindir / "clang", "main.c", "-o", test_exe] + compiler_flags, cwd=td)
+            self.run_cmd(self.sdk_bindir / "llvm-readobj", "-h", test_exe)
             from ..build_qemu import BuildQEMU
-            runCmd(self.sdk_sysroot / "bin/run_with_qemu.py", "--qemu", BuildQEMU.qemu_cheri_binary(self),
-                   "--timeout", "20", test_exe, "HELLO", "WORLD")
+            self.run_cmd(self.sdk_sysroot / "bin/run_with_qemu.py", "--qemu", BuildQEMU.qemu_cheri_binary(self),
+                         "--timeout", "20", test_exe, "HELLO", "WORLD")

@@ -31,21 +31,20 @@
 
 import json
 import os
-from urllib.parse import urlparse
 
 from .build_qemu import BuildQEMU
 from .cross.cheribsd import BuildCHERIBSD
 from .cross.crosscompileproject import CheriConfig, CompilationTargets, CrossCompileProject
 from .disk_image import BuildCheriBSDDiskImage
 from .project import DefaultInstallDir, GitRepository, MakeCommandKind, SimpleProject
-from ..utils import setEnv, ThreadJoiner
+from ..utils import set_env, ThreadJoiner
 
 
 class BuildSyzkaller(CrossCompileProject):
     dependencies = ["go", "cheribsd"]
     project_name = "cheri-syzkaller"
-    githubBaseUrl = "https://github.com/CTSRD-CHERI/"
-    repository = GitRepository(githubBaseUrl + "cheri-syzkaller.git")
+    github_base_url = "https://github.com/CTSRD-CHERI/"
+    repository = GitRepository(github_base_url + "cheri-syzkaller.git")
     # no_default_sysroot = None // probably useless??
     # skip_cheri_symlinks = True // llvm target only, useless here
     make_kind = MakeCommandKind.GnuMake
@@ -60,27 +59,27 @@ class BuildSyzkaller(CrossCompileProject):
         cls.sysgen = cls.add_bool_option(
             "run-sysgen", show_help=True,
             help="Rerun syz-extract and syz-sysgen to rebuild generated Go "
-            "syscall descriptions.")
+                 "syscall descriptions.")
 
     def __init__(self, config):
-        self._installPrefix = config.cheri_sdk_dir
-        self._installDir = config.cheri_sdk_dir
+        self._install_prefix = config.cheri_sdk_dir
+        self._install_dir = config.cheri_sdk_dir
         self.destdir = ""
         super().__init__(config)
 
         # self.gopath = source_base / gohome
         self.goroot = config.cheri_sdk_dir / "go"
 
-        repo_url = urlparse(self.repository.url)
-        repo_path = repo_url.path.split(".")[0]
-        parts = ["src", repo_url.netloc] + repo_path.split("/")
-        self.gopath = self.buildDir
-        self.gosrc = self.sourceDir
+        # repo_url = urlparse(self.repository.url)
+        # repo_path = repo_url.path.split(".")[0]
+        # parts = ["src", repo_url.netloc] + repo_path.split("/")
+        self.gopath = self.build_dir
+        self.gosrc = self.source_dir
 
-        self._newPath = (str(self.config.cheri_sdk_dir / "bin") + ":" +
-                         str(self.config.dollarPathWithOtherTools))
+        self._new_path = (str(self.config.cheri_sdk_dir / "bin") + ":" +
+                          str(self.config.dollar_path_with_other_tools))
 
-        self.cheribsd_dir = BuildCHERIBSD.getSourceDir(self)
+        self.cheribsd_dir = BuildCHERIBSD.get_source_dir(self)
 
     def syzkaller_install_path(self):
         return self.config.cheri_sdk_bindir
@@ -88,7 +87,7 @@ class BuildSyzkaller(CrossCompileProject):
     def syzkaller_binary(self):
         return self.config.cheri_sdk_bindir / "syz-manager"
 
-    def needsConfigure(self) -> bool:
+    def needs_configure(self) -> bool:
         return False
 
     def compile(self, **kwargs):
@@ -101,37 +100,37 @@ class BuildSyzkaller(CrossCompileProject):
             GOROOT=self.goroot.expanduser(),
             GOPATH=self.gopath.expanduser(),
             CC=self.CC, CXX=self.CXX,
-            PATH=self._newPath)
+            PATH=self._new_path)
         if self.sysgen:
             self.generate()
 
         self.make_args.set_env(CFLAGS=" ".join(cflags))
         self.run_make(parallel=False, cwd=self.gosrc)
 
-    def generate(self, **kwargs):
-        with setEnv(PATH=self._newPath, SOURCEDIR=self.cheribsd_dir):
+    def generate(self):
+        with set_env(PATH=self._new_path, SOURCEDIR=self.cheribsd_dir):
             self.run_make("extract", parallel=False, cwd=self.gosrc)
             self.run_make("generate", parallel=False, cwd=self.gosrc)
 
     def install(self, **kwargs):
         # XXX-AM: should have a propert install dir configuration
-        native_build = self.sourceDir / "bin"
+        native_build = self.source_dir / "bin"
         mips64_build = native_build / "freebsd_mips64"
         syz_remote_install = self.syzkaller_install_path() / "freebsd_mips64"
 
         self.makedirs(syz_remote_install)
 
-        self.installFile(native_build / "syz-manager", self.syzkaller_binary(), mode=0o755)
+        self.install_file(native_build / "syz-manager", self.syzkaller_binary(), mode=0o755)
 
         if not self.config.pretend:
             # mips64_build does not exist if we preted, so skip
             for fname in os.listdir(str(mips64_build)):
                 fpath = mips64_build / fname
                 if os.path.isfile(fpath):
-                    self.installFile(fpath, syz_remote_install / fname, mode=0o755)
+                    self.install_file(fpath, syz_remote_install / fname, mode=0o755)
 
     def clean(self) -> ThreadJoiner:
-        self.run_cmd(["chmod", "-R", "u+w", self.buildDir])
+        self.run_cmd(["chmod", "-R", "u+w", self.build_dir])
         self.make_args.set_env(
             HOSTARCH="amd64",
             TARGETARCH="mips64",
@@ -139,7 +138,7 @@ class BuildSyzkaller(CrossCompileProject):
             GOROOT=self.goroot.expanduser(),
             GOPATH=self.gopath.expanduser(),
             CC=self.CC, CXX=self.CXX,
-            PATH=self._newPath)
+            PATH=self._new_path)
 
         self.run_make("clean", parallel=False, cwd=self.gosrc)
         joiner = super().clean()
@@ -153,17 +152,20 @@ class RunSyzkaller(SimpleProject):
     def setup_config_options(cls, **kwargs):
         super().setup_config_options(**kwargs)
         cls.syz_config = cls.add_path_option("syz-config", default=None,
-                                           help="Path to the syzkaller configuration file to use.",
-                                           show_help=True)
+                                             help="Path to the syzkaller configuration file to use.",
+                                             show_help=True)
         cls.syz_ssh_key = cls.add_path_option("ssh-privkey", show_help=True,
-            default=lambda config, project: (config.sourceRoot / "extra-files" / "syzkaller_id_rsa"),
-            help="A directory with additional files that will be added to the image (default: "
-                 "'$SOURCE_ROOT/extra-files/syzkaller_id_rsa')", metavar="syzkaller_id_rsa")
+                                              default=lambda config, project: (
+                                                      config.source_root / "extra-files" / "syzkaller_id_rsa"),
+                                              help="A directory with additional files that will be added to the image "
+                                                   "(default: '$SOURCE_ROOT/extra-files/syzkaller_id_rsa')",
+                                              metavar="syzkaller_id_rsa")
         cls.syz_workdir = cls.add_path_option("workdir", show_help=True,
-            default=lambda config, project: (config.outputRoot / "syzkaller-workdir"),
-            help="Working directory for syzkaller output.", metavar="DIR")
+                                              default=lambda config, project: (
+                                                      config.output_root / "syzkaller-workdir"),
+                                              help="Working directory for syzkaller output.", metavar="DIR")
         cls.syz_debug = cls.add_bool_option("debug",
-            help="Run syz-manager in debug mode, requires manual startup of the VM.")
+                                            help="Run syz-manager in debug mode, requires manual startup of the VM.")
 
     def __init__(self, config: CheriConfig):
         super().__init__(config)
@@ -173,8 +175,9 @@ class RunSyzkaller(SimpleProject):
             self, cross_target=CompilationTargets.CHERIBSD_MIPS_HYBRID).syzkaller_binary()
         self.kernel_path = BuildCHERIBSD.get_installed_kernel_path(
             self, cross_target=CompilationTargets.CHERIBSD_MIPS_PURECAP)
-        self.kernel_src_path = BuildCHERIBSD.get_instance(self, cross_target=CompilationTargets.CHERIBSD_MIPS_PURECAP).sourceDir
-        self.kernel_build_path = BuildCHERIBSD.get_instance(self, cross_target=CompilationTargets.CHERIBSD_MIPS_PURECAP).buildDir
+        mips_purecap_cheribsd = BuildCHERIBSD.get_instance(self, cross_target=CompilationTargets.CHERIBSD_MIPS_PURECAP)
+        self.kernel_src_path = mips_purecap_cheribsd.source_dir
+        self.kernel_build_path = mips_purecap_cheribsd.build_dir
         self.disk_image = BuildCheriBSDDiskImage.get_instance(
             self, cross_target=CompilationTargets.CHERIBSD_MIPS_PURECAP).disk_image_path
 

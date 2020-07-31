@@ -62,6 +62,33 @@ class MultiprocessStages(Enum):
 CURRENT_STAGE = MultiprocessStages.FINDING_SSH_PORT  # type: MultiprocessStages
 
 
+def add_common_cmdline_args(parser: argparse.ArgumentParser, default_xunit_output: str, allow_multiprocessing: bool):
+    parser.add_argument("--ssh-executor-script", help="Path to the ssh.py executor script", required=True)
+    parser.add_argument("--use-shared-mount-for-tests", action="store_true", default=True)
+    parser.add_argument("--no-use-shared-mount-for-tests", dest="use-shared-mount-for-tests", action="store_false")
+    parser.add_argument("--llvm-lit-path")
+    parser.add_argument("--xunit-output", default=default_xunit_output)
+    parser.add_argument("--lit-debug-output", action="store_true")
+    # For the parallel jobs
+    if allow_multiprocessing:
+        parser.add_argument("--multiprocessing-debug", action="store_true")
+        parser.add_argument("--parallel-jobs", metavar="N", type=int,
+                            help="Split up the testsuite into N parallel jobs")
+        parser.add_argument("--internal-num-shards", type=int, help=argparse.SUPPRESS)
+        parser.add_argument("--internal-shard", type=int, help=argparse.SUPPRESS)
+
+
+def adjust_common_cmdline_args(args: argparse.Namespace):
+    if args.use_shared_mount_for_tests:
+        # If we have a shared directory use that to massively speed up running tests
+        tmpdir_name = "local-tmp" if not args.internal_shard else "local-tmp-shard-" + str(args.internal_shard)
+        shared_tmpdir = Path(args.build_dir, tmpdir_name)
+        os.makedirs(str(shared_tmpdir), exist_ok=True)
+        args.shared_tmpdir_local = shared_tmpdir
+        args.smb_mount_directories.append(
+            boot_cheribsd.SmbMount(shared_tmpdir, readonly=False, in_target="/shared-tmpdir"))
+
+
 def mp_debug(cmdline_args: argparse.Namespace, *args, **kwargs):
     if cmdline_args.multiprocessing_debug:
         boot_cheribsd.info(*args, **kwargs)
@@ -121,7 +148,7 @@ def run_remote_lit_tests(testsuite: str, qemu: boot_cheribsd.CheriBSDInstance, a
         if mp_q:
             mp_q.put((COMPLETED, args.internal_shard))
         return result
-    except:
+    except Exception:
         if mp_q:
             boot_cheribsd.failure("GOT EXCEPTION in shard ", args.internal_shard, ": ", sys.exc_info(), exit=False)
             e = sys.exc_info()[1]
@@ -142,11 +169,10 @@ def run_remote_lit_tests_impl(testsuite: str, qemu: boot_cheribsd.CheriBSDInstan
     notify_main_process(args, MultiprocessStages.TESTING_SSH_CONNECTION, mp_q, barrier=barrier)
     if args.pretend and os.getenv("FAIL_RAISE_EXCEPTION") and args.internal_shard == 1:
         raise RuntimeError("SOMETHING WENT WRONG!")
-    boot_cheribsd.checked_run_cheribsd_command(qemu, "cat /root/.ssh/authorized_keys", timeout=20)
+    qemu.checked_run("cat /root/.ssh/authorized_keys", timeout=20)
     port = args.ssh_port
     user = "root"  # TODO: run these tests as non-root!
     test_build_dir = Path(args.build_dir)
-    (test_build_dir / "tmp").mkdir(exist_ok=True)
     # TODO: move this to boot_cheribsd.py
     config_contents = """
 Host cheribsd-test-instance
@@ -202,14 +228,19 @@ Host cheribsd-test-instance
     if args.pretend:
         time.sleep(2.5)
 
-    # slow executor using scp:
-    # executor = 'SSHExecutor("localhost", username="{user}", port={port})'.format(user=user, port=port)
-    executor = 'SSHExecutorWithNFSMount("cheribsd-test-instance", username="{user}", port={port}, ' \
-               'nfs_dir="{host_dir}", path_in_target="/build/tmp",' \
-               'extra_ssh_flags=["-F", "{tempdir}/config", "-n", "-4"], ' \
-               'extra_scp_flags=["-F", "{tempdir}/config"])'.format(user=user, port=port,
-                                                                    host_dir=str(test_build_dir / "tmp"),
-                                                                    tempdir=tempdir)
+    extra_ssh_args = commandline_to_str(("-n", "-4", "-F", "{tempdir}/config".format(tempdir=tempdir)))
+    extra_scp_args = commandline_to_str(("-F", "{tempdir}/config".format(tempdir=tempdir)))
+    ssh_executor_args = [args.ssh_executor_script, "--host", "cheribsd-test-instance",
+                         "--extra-ssh-args=" + extra_ssh_args]
+    if args.use_shared_mount_for_tests:
+        # If we have a shared directory use that to massively speed up running tests
+        tmpdir_name = args.shared_tmpdir_local.name
+        ssh_executor_args.append("--shared-mount-local-path=" + str(args.shared_tmpdir_local))
+        ssh_executor_args.append("--shared-mount-remote-path=/build/" + tmpdir_name)
+    else:
+        # slow executor using scp:
+        ssh_executor_args.append("--extra-scp-args=" + extra_scp_args)
+    executor = commandline_to_str(ssh_executor_args)
     # TODO: I was previously passing -t -t to ssh. Is this actually needed?
     boot_cheribsd.success("Running", testsuite, "tests with executor", executor)
     notify_main_process(args, MultiprocessStages.RUNNING_TESTS, mp_q)
@@ -217,7 +248,7 @@ Host cheribsd-test-instance
     if llvm_lit_path is None:
         llvm_lit_path = str(test_build_dir / "bin/llvm-lit")
     # Note: we require python 3 since otherwise it seems to deadlock in Jenkins
-    lit_cmd = ["python3", llvm_lit_path, "-j1", "-vv", "-Dexecutor=" + executor, "test"]
+    lit_cmd = [sys.executable, llvm_lit_path, "-j1", "-vv", "-Dexecutor=" + executor, "test"]
     if lit_extra_args:
         lit_cmd.extend(lit_extra_args)
     if args.lit_debug_output:

@@ -41,12 +41,12 @@ class BuildValgrind(AutotoolsProject):
     def __init__(self, config: CheriConfig):
         super().__init__(config)
         # Need the i386 kernel headers
-        if OSInfo.isUbuntu() or OSInfo.isDebian():
-            self._addRequiredSystemHeader("/usr/include/i386-linux-gnu/asm/types.h", apt="linux-libc-dev:i386")
-            self._addRequiredSystemHeader("/usr/include/x86_64-linux-gnu/asm/types.h", apt="linux-libc-dev:amd64")
+        if OSInfo.is_ubuntu() or OSInfo.is_debian():
+            self.add_required_system_header("/usr/include/i386-linux-gnu/asm/types.h", apt="linux-libc-dev:i386")
+            self.add_required_system_header("/usr/include/x86_64-linux-gnu/asm/types.h", apt="linux-libc-dev:amd64")
             # 32-bit headers not available on ubuntu
-            # self.configureArgs.append("--enable-only64bit")
+            # self.configure_args.append("--enable-only64bit")
 
     def configure(self, **kwargs):
-        self.run_cmd(self.sourceDir / "autogen.sh", cwd=self.sourceDir)
+        self.run_cmd(self.source_dir / "autogen.sh", cwd=self.source_dir)
         super().configure()

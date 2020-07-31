@@ -28,6 +28,7 @@
 # SUCH DAMAGE.
 #
 import contextlib
+import fcntl
 import functools
 import os
 import re
@@ -38,20 +39,22 @@ import socket
 import subprocess
 import sys
 import tempfile
+import termios
 import threading
 import traceback
 import typing
 from pathlib import Path
 from subprocess import CompletedProcess
 
-from .colour import coloured, AnsiColour
+from .colour import AnsiColour, coloured
 
 # reduce the number of import statements per project  # no-combine
-__all__ = ["typing", "printCommand", "includeLocalFile", "CompilerInfo",   # no-combine
-           "runCmd", "statusUpdate", "fatalError", "coloured", "AnsiColour", "setEnv", "init_global_config",  # no-combine
-           "warningMessage", "popen_handle_noexec", "extract_version", "get_program_version",  # no-combine
-           "check_call_handle_noexec", "ThreadJoiner", "getCompilerInfo", "latest_system_clang_tool", "SafeDict",  # no-combine
-           "defaultNumberOfMakeJobs", "commandline_to_str", "OSInfo", "is_jenkins_build",  # no-combine
+__all__ = ["typing", "print_command", "include_local_file", "CompilerInfo",  # no-combine
+           "run_command", "status_update", "fatal_error", "coloured", "AnsiColour", "set_env",  # no-combine
+           "init_global_config", "warning_message", "popen_handle_noexec", "extract_version",  # no-combine
+           "check_call_handle_noexec", "ThreadJoiner", "get_compiler_info", "latest_system_clang_tool",  # no-combine
+           "get_program_version", "SafeDict", "keep_terminal_sane",  # no-combine
+           "default_make_jobs_count", "commandline_to_str", "OSInfo", "is_jenkins_build",  # no-combine
            "get_version_output", "classproperty", "find_free_port", "have_working_internet_connection",  # no-combine
            "is_case_sensitive_dir", "SocketAndPort"]  # no-combine
 Type_T = typing.TypeVar("Type_T")
@@ -59,7 +62,7 @@ Type_T = typing.TypeVar("Type_T")
 
 class GlobalConfig:
     TEST_MODE = False
-    PRENTEND_MODE = False
+    PRETEND_MODE = False
     VERBOSE_MODE = False
     QUIET_MODE = False
 
@@ -67,11 +70,12 @@ class GlobalConfig:
 def init_global_config(*, test_mode: bool, pretend_mode: bool, verbose_mode: bool, quiet_mode: bool):
     assert not (verbose_mode and quiet_mode), "mutually exclusive"
     GlobalConfig.TEST_MODE = test_mode
-    GlobalConfig.PRENTEND_MODE = pretend_mode
+    GlobalConfig.PRETEND_MODE = pretend_mode
     GlobalConfig.VERBOSE_MODE = verbose_mode
     GlobalConfig.QUIET_MODE = quiet_mode
 
 
+# noinspection PyPep8Naming
 class classproperty(object):
     def __init__(self, f):
         self.f = f
@@ -96,8 +100,8 @@ def __filter_env(env: dict) -> dict:
     return result
 
 
-def printCommand(arg1: "typing.Union[str, typing.Sequence[typing.Any]]", *remaining_args, outputFile=None,
-                 colour=AnsiColour.yellow, cwd=None, env=None, sep=" ", print_verbose_only=False, **kwargs):
+def print_command(arg1: "typing.Union[str, typing.Sequence[typing.Any]]", *remaining_args, output_file=None,
+                  colour=AnsiColour.yellow, cwd=None, env=None, sep=" ", print_verbose_only=False, **kwargs):
     if GlobalConfig.QUIET_MODE or (print_verbose_only and not GlobalConfig.VERBOSE_MODE):
         return
     # also allow passing a single string
@@ -114,8 +118,8 @@ def printCommand(arg1: "typing.Union[str, typing.Sequence[typing.Any]]", *remain
             prefix += ("env", envvars)
     # comma in tuple is required otherwise it creates a tuple of string chars
     new_args = (shlex.quote(str(arg1)),) + tuple(map(shlex.quote, map(str, remaining_args)))
-    if outputFile:
-        new_args += (">", str(outputFile))
+    if output_file:
+        new_args += (">", str(output_file))
     # Avoid a space before the actual command if there is no prefic:
     if not prefix:
         print(coloured(colour, new_args, sep=sep), flush=True, **kwargs)
@@ -123,7 +127,7 @@ def printCommand(arg1: "typing.Union[str, typing.Sequence[typing.Any]]", *remain
         print(coloured(colour, prefix, sep=sep), coloured(colour, new_args, sep=sep), flush=True, **kwargs)
 
 
-def getInterpreter(cmdline: "typing.Sequence[str]") -> "typing.Optional[typing.List[str]]":
+def get_interpreter(cmdline: "typing.Sequence[str]") -> "typing.Optional[typing.List[str]]":
     """
     :param cmdline: The command to check
     :return: The interpreter command if the executable does not have execute permissions
@@ -132,35 +136,33 @@ def getInterpreter(cmdline: "typing.Sequence[str]") -> "typing.Optional[typing.L
     print(executable, os.access(str(executable), os.X_OK), cmdline)
     if not executable.exists():
         executable = Path(shutil.which(str(executable)))
-    statusUpdate(executable, "is not executable, looking for shebang:", end=" ")
+    status_update(executable, "is not executable, looking for shebang:", end=" ")
     with executable.open("r", encoding="utf-8") as f:
         first_line = f.readline()
         if first_line.startswith("#!"):
             interpreter = shlex.split(first_line[2:])
-            statusUpdate("Will run", executable, "using", interpreter)
+            status_update("Will run", executable, "using", interpreter)
             return interpreter
         else:
-            statusUpdate("No shebang found.")
+            status_update("No shebang found.")
             return None
 
 
 def _make_called_process_error(retcode, args, *, stdout=None, stderr=None, cwd=None):
-    if sys.version_info < (3, 5):
-        err = subprocess.CalledProcessError(retcode, args, output=stdout)
-        err.stderr = stderr
-    else:
-        err = subprocess.CalledProcessError(retcode, args, output=stdout, stderr=stderr)
+    err = subprocess.CalledProcessError(retcode, args, output=stdout, stderr=stderr)
     err.cwd = cwd
     return err
 
 
 def check_call_handle_noexec(cmdline: "typing.List[str]", **kwargs):
     try:
-        return subprocess.check_call(cmdline, **kwargs)
+        with keep_terminal_sane():
+            return subprocess.check_call(cmdline, **kwargs)
     except PermissionError as e:
-        interpreter = getInterpreter(cmdline)
+        interpreter = get_interpreter(cmdline)
         if interpreter:
-            return subprocess.check_call(interpreter + cmdline, **kwargs)
+            with keep_terminal_sane():
+                return subprocess.check_call(interpreter + cmdline, **kwargs)
         raise _make_called_process_error(e.errno, cmdline, cwd=kwargs.get("cwd", None), stderr=str(e).encode("utf-8"))
     except FileNotFoundError as e:
         raise _make_called_process_error(e.errno, cmdline, cwd=kwargs.get("cwd", None), stderr=str(e).encode("utf-8"))
@@ -170,7 +172,7 @@ def popen_handle_noexec(cmdline: "typing.List[str]", **kwargs) -> subprocess.Pop
     try:
         return subprocess.Popen(cmdline, **kwargs)
     except PermissionError as e:
-        interpreter = getInterpreter(cmdline)
+        interpreter = get_interpreter(cmdline)
         if interpreter:
             return subprocess.Popen(interpreter + cmdline, **kwargs)
         raise _make_called_process_error(e.errno, cmdline, cwd=kwargs.get("cwd", None), stderr=str(e).encode("utf-8"))
@@ -187,19 +189,21 @@ def _become_tty_foreground_process():
     signal.signal(signal.SIGTTOU, hdlr)
 
 
-def runCmd(*args, captureOutput=False, captureError=False, input: "typing.Union[str, bytes]" = None, timeout=None,
-           print_verbose_only=False, runInPretendMode=False, raiseInPretendMode=False, no_print=False,
-           replace_env=False, give_tty_control=False, expected_exit_code=0, allow_unexpected_returncode=False,
-           **kwargs):
+# noinspection PyShadowingBuiltins
+def run_command(*args, capture_output=False, capture_error=False, input: "typing.Union[str, bytes]" = None,
+                timeout=None,
+                print_verbose_only=False, run_in_pretend_mode=False, raise_in_pretend_mode=False, no_print=False,
+                replace_env=False, give_tty_control=False, expected_exit_code=0, allow_unexpected_returncode=False,
+                **kwargs):
     if len(args) == 1 and isinstance(args[0], (list, tuple)):
         cmdline = args[0]  # list with parameters was passed
     else:
         cmdline = args
-    assert "_ARGCOMPLETE" not in os.environ, "Should execute any programs as part of bash completion!"
+    assert "_ARGCOMPLETE" not in os.environ, "Should not execute any programs as part of bash completion!"
     cmdline = list(map(str, cmdline))  # ensure it's all strings so that subprocess can handle it
     # When running scripts from a noexec filesystem try to read the interpreter and run that
     if not no_print:
-        printCommand(cmdline, cwd=kwargs.get("cwd"), env=kwargs.get("env"), print_verbose_only=print_verbose_only)
+        print_command(cmdline, cwd=kwargs.get("cwd"), env=kwargs.get("env"), print_verbose_only=print_verbose_only)
     if "cwd" in kwargs:
         kwargs["cwd"] = str(kwargs["cwd"])
     else:
@@ -208,7 +212,7 @@ def runCmd(*args, captureOutput=False, captureError=False, input: "typing.Union[
             kwargs["cwd"] = os.getcwd()
         except FileNotFoundError:
             kwargs["cwd"] = tempfile.gettempdir()
-    if not runInPretendMode and GlobalConfig.PRENTEND_MODE:
+    if not run_in_pretend_mode and GlobalConfig.PRETEND_MODE:
         return CompletedProcess(args=cmdline, returncode=0, stdout=b"", stderr=b"")
     # actually run the process now:
     if input is not None:
@@ -216,10 +220,10 @@ def runCmd(*args, captureOutput=False, captureError=False, input: "typing.Union[
         kwargs['stdin'] = subprocess.PIPE
         if not isinstance(input, bytes):
             input = str(input).encode("utf-8")
-    if captureOutput:
+    if capture_output:
         assert "stdout" not in kwargs  # we need to use stdout here
         kwargs["stdout"] = subprocess.PIPE
-    if captureError:
+    if capture_error:
         assert "stderr" not in kwargs  # we need to use stdout here
         kwargs["stderr"] = subprocess.PIPE
     elif GlobalConfig.QUIET_MODE and "stdout" not in kwargs:
@@ -238,34 +242,37 @@ def runCmd(*args, captureOutput=False, captureError=False, input: "typing.Union[
         kwargs["preexec_fn"] = _become_tty_foreground_process
     stdout = b""
     stderr = b""
-    with popen_handle_noexec(cmdline, **kwargs) as process:
-        try:
-            stdout, stderr = process.communicate(input, timeout=timeout)
-        except KeyboardInterrupt:
-            process.send_signal(signal.SIGINT)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            stdout, stderr = process.communicate()
-            assert timeout is not None
-            raise subprocess.TimeoutExpired(process.args, timeout, output=stdout, stderr=stderr)
-        except BrokenPipeError:
-            # just return the exit code
-            process.kill()
-            retcode = process.wait()
-            raise _make_called_process_error(retcode, process.args, stdout=b"", cwd=kwargs["cwd"])
-        except Exception:
-            process.kill()
-            process.wait()
-            raise
-        retcode = process.poll()
-        if retcode != expected_exit_code and not allow_unexpected_returncode:
-            if GlobalConfig.PRENTEND_MODE and not raiseInPretendMode:
-                cwd = (". Working directory was ", kwargs["cwd"]) if "cwd" in kwargs else ()
-                fatalError("Command ", "`" + commandline_to_str(process.args) +
-                           "` failed with unexpected exit code ", retcode, *cwd, sep="")
-            else:
-                raise _make_called_process_error(retcode, process.args, stdout=stdout, cwd=kwargs["cwd"])
-        return CompletedProcess(process.args, retcode, stdout, stderr)
+    # Some programs (such as QEMU) can mess up the TTY state if they don't exit cleanly
+    with keep_terminal_sane():
+        with popen_handle_noexec(cmdline, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except KeyboardInterrupt:
+                process.send_signal(signal.SIGINT)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+                assert timeout is not None
+                raise subprocess.TimeoutExpired(process.args, timeout, output=stdout, stderr=stderr)
+            except BrokenPipeError:
+                # just return the exit code
+                process.kill()
+                retcode = process.wait()
+                raise _make_called_process_error(retcode, process.args, stdout=b"", cwd=kwargs["cwd"])
+            except Exception:
+                process.kill()
+                process.wait()
+                raise
+            retcode = process.poll()
+            if retcode != expected_exit_code and not allow_unexpected_returncode:
+                if GlobalConfig.PRETEND_MODE and not raise_in_pretend_mode:
+                    cwd = (". Working directory was ", kwargs["cwd"]) if "cwd" in kwargs else ()
+                    fatal_error("Command ", "`" + commandline_to_str(process.args) +
+                                "` failed with unexpected exit code ", retcode, *cwd, sep="")
+                else:
+                    raise _make_called_process_error(retcode, process.args, stdout=stdout, stderr=stderr,
+                                                     cwd=kwargs["cwd"])
+            return CompletedProcess(process.args, retcode, stdout, stderr)
 
 
 def commandline_to_str(args: "typing.Iterable[str]") -> str:
@@ -296,11 +303,11 @@ class CompilerInfo(object):
     def get_resource_dir(self):
         # assert self.is_clang, self.compiler
         if not self._resource_dir:
-            if not self.path.exists() and GlobalConfig.PRENTEND_MODE:
+            if not self.path.exists() and GlobalConfig.PRETEND_MODE:
                 return Path("/unknown/resource/dir")  # avoid failing in jenkins
             # pretend to compile an existing source file and capture the -resource-dir output
-            cc1_cmd = runCmd(self.path, "-###", "-xc", "-c", "/dev/null",
-                             captureError=True, print_verbose_only=True, runInPretendMode=True)
+            cc1_cmd = run_command(self.path, "-###", "-xc", "-c", "/dev/null",
+                                  capture_error=True, print_verbose_only=True, run_in_pretend_mode=True)
             resource_dir_pat = re.compile(b'"-cc1".+"-resource-dir" "([^"]+)"')
             self._resource_dir = Path(resource_dir_pat.search(cc1_cmd.stderr).group(1).decode("utf-8"))
         return self._resource_dir
@@ -318,12 +325,12 @@ class CompilerInfo(object):
         if result.exists():
             return result
         else:
-            statusUpdate("Could not find version-suffixed", binutil, "in expected path", result)
+            status_update("Could not find version-suffixed", binutil, "in expected path", result)
         if real_compiler_path != self.path.parent:
             # Clang is installed in a different directory (e.g. /usr/lib/llvm-7) -> should be unversioned
             result = real_compiler_path.parent / binutil
             if not result.exists():
-                warningMessage("Could not find", binutil, "in expected path", result)
+                warning_message("Could not find", binutil, "in expected path", result)
                 result = None
         if not result:
             result = shutil.which(binutil)  # fall back to the default and assume clang can find the right one
@@ -337,48 +344,53 @@ class CompilerInfo(object):
     def is_apple_clang(self):
         return self.compiler == "apple-clang"
 
+    def __repr__(self):
+        return "{} ({} {})".format(self.path, self.compiler, ".".join(map(str, self.version)))
+
+
 _cached_compiler_infos = dict()  # type: typing.Dict[Path, CompilerInfo]
 
 
-def getCompilerInfo(compiler: "typing.Union[str, Path]") -> CompilerInfo:
+def get_compiler_info(compiler: "typing.Union[str, Path]") -> CompilerInfo:
     assert compiler is not None
     if compiler not in _cached_compiler_infos:
-        clangVersionPattern = re.compile(b"clang version (\\d+)\\.(\\d+)\\.?(\\d+)?")
-        gccVersionPattern = re.compile(b"gcc version (\\d+)\\.(\\d+)\\.?(\\d+)?")
-        appleLlvmVersionPattern = re.compile(b"Apple (?:clang|LLVM) version (\\d+)\\.(\\d+)\\.?(\\d+)?")
+        clang_version_pattern = re.compile(b"clang version (\\d+)\\.(\\d+)\\.?(\\d+)?")
+        gcc_version_pattern = re.compile(b"gcc version (\\d+)\\.(\\d+)\\.?(\\d+)?")
+        apple_llvm_version_pattern = re.compile(b"Apple (?:clang|LLVM) version (\\d+)\\.(\\d+)\\.?(\\d+)?")
         # TODO: could also use -dumpmachine to get the triple
-        targetPattern = re.compile(b"Target: (.+)")
+        target_pattern = re.compile(b"Target: (.+)")
         # clang prints this output to stderr
         try:
             # Use -v instead of --version to support both gcc and clang
             # Note: for clang-cpp/cpp we need to have stdin as devnull
-            versionCmd = runCmd(compiler, "-v", captureError=True, print_verbose_only=True, runInPretendMode=True,
-                                stdin=subprocess.DEVNULL, captureOutput=True)
+            version_cmd = run_command(compiler, "-v", capture_error=True, print_verbose_only=True,
+                                      run_in_pretend_mode=True,
+                                      stdin=subprocess.DEVNULL, capture_output=True)
         except subprocess.CalledProcessError as e:
             stderr = e.stderr if e.stderr else b"FAILED: " + str(e).encode("utf-8")
-            versionCmd = CompletedProcess(e.cmd, e.returncode, e.output, stderr)
+            version_cmd = CompletedProcess(e.cmd, e.returncode, e.output, stderr)
 
-        clangVersion = clangVersionPattern.search(versionCmd.stderr)
-        appleLlvmVersion = appleLlvmVersionPattern.search(versionCmd.stderr)
-        gccVersion = gccVersionPattern.search(versionCmd.stderr)
-        target = targetPattern.search(versionCmd.stderr)
+        clang_version = clang_version_pattern.search(version_cmd.stderr)
+        apple_llvm_version = apple_llvm_version_pattern.search(version_cmd.stderr)
+        gcc_version = gcc_version_pattern.search(version_cmd.stderr)
+        target = target_pattern.search(version_cmd.stderr)
         kind = "unknown compiler"
         version = (0, 0, 0)
-        targetString = target.group(1).decode("utf-8") if target else ""
-        if gccVersion:
+        target_string = target.group(1).decode("utf-8") if target else ""
+        if gcc_version:
             kind = "gcc"
-            version = tuple(map(int, gccVersion.groups()))
-        elif appleLlvmVersion:
+            version = tuple(map(int, gcc_version.groups()))
+        elif apple_llvm_version:
             kind = "apple-clang"
-            version = tuple(map(int, appleLlvmVersion.groups()))
-        elif clangVersion:
+            version = tuple(map(int, apple_llvm_version.groups()))
+        elif clang_version:
             kind = "clang"
-            version = tuple(map(int, clangVersion.groups()))
+            version = tuple(map(int, clang_version.groups()))
         else:
-            warningMessage("Could not detect compiler info for", compiler, "- output was", versionCmd.stderr)
+            warning_message("Could not detect compiler info for", compiler, "- output was", version_cmd.stderr)
         if GlobalConfig.VERBOSE_MODE:
-            print(compiler, "is", kind, "version", version, "with default target", targetString)
-        _cached_compiler_infos[compiler] = CompilerInfo(compiler, kind, version, targetString)
+            print(compiler, "is", kind, "version", version, "with default target", target_string)
+        _cached_compiler_infos[compiler] = CompilerInfo(compiler, kind, version, target_string)
     return _cached_compiler_infos[compiler]
 
 
@@ -387,8 +399,8 @@ def getCompilerInfo(compiler: "typing.Union[str, Path]") -> CompilerInfo:
 def get_version_output(program: Path, command_args: tuple = None) -> "bytes":
     if command_args is None:
         command_args = ["--version"]
-    prog = runCmd([str(program)] + list(command_args), stdin=subprocess.DEVNULL,
-                  stderr=subprocess.STDOUT, captureOutput=True, runInPretendMode=True)
+    prog = run_command([str(program)] + list(command_args), stdin=subprocess.DEVNULL,
+                       stderr=subprocess.STDOUT, capture_output=True, run_in_pretend_mode=True)
     return prog.stdout
 
 
@@ -435,7 +447,7 @@ def latest_system_clang_tool(basename: str, fallback_basename: str) -> Path:
                 continue
             # print("Checking compiler candidate", candidate)
             candidate = search_dir / candidate_name
-            info = getCompilerInfo(candidate)
+            info = get_compiler_info(candidate)
             if OSInfo.IS_MAC and not info.is_apple_clang:
                 # print("Ignoring", candidate, "since it is not apple clang and won't be able to build host binaries")
                 continue
@@ -454,48 +466,52 @@ def latest_system_clang_tool(basename: str, fallback_basename: str) -> Path:
     return newest[0]
 
 
-def defaultNumberOfMakeJobs():
-    makeJobs = os.cpu_count()
-    if makeJobs > 24:
+def default_make_jobs_count():
+    make_jobs = os.cpu_count()
+    if make_jobs > 24:
         # don't use up all the resources on shared build systems
         # (you can still override this with the -j command line option)
-        makeJobs /= 2
-    return makeJobs
+        make_jobs /= 2
+    return make_jobs
+
 
 def maybe_add_space(msg, sep) -> tuple:
     if sep == "":
         return msg, " "
-    return (msg, )
+    return (msg,)
 
-def statusUpdate(*args, sep=" ", **kwargs):
+
+def status_update(*args, sep=" ", **kwargs):
     print(coloured(AnsiColour.cyan, *args, sep=sep), **kwargs)
 
 
-def warningMessage(*args, sep=" "):
+def warning_message(*args, sep=" "):
     # we ignore fatal errors when simulating a run
     print(coloured(AnsiColour.magenta, maybe_add_space("Warning:", sep) + args, sep=sep), file=sys.stderr, flush=True)
 
 
-def fatalError(*args, sep=" ", fixitHint=None, fatalWhenPretending=False, exit_code=3):
+def fatal_error(*args, sep=" ", fixit_hint=None, fatal_when_pretending=False, exit_code=3):
     # we ignore fatal errors when simulating a run
-    if GlobalConfig.PRENTEND_MODE:
-        print(coloured(AnsiColour.red, maybe_add_space("Potential fatal error:", sep) + args, sep=sep), file=sys.stderr, flush=True)
-        if fixitHint:
-            print(coloured(AnsiColour.blue, "Possible solution:", fixitHint), file=sys.stderr, flush=True)
-        if fatalWhenPretending:
+    if GlobalConfig.PRETEND_MODE:
+        print(coloured(AnsiColour.red, maybe_add_space("Potential fatal error:", sep) + args, sep=sep), file=sys.stderr,
+              flush=True)
+        if fixit_hint:
+            print(coloured(AnsiColour.blue, "Possible solution:", fixit_hint), file=sys.stderr, flush=True)
+        if fatal_when_pretending:
             traceback.print_stack()
             sys.exit(exit_code)
     else:
-        print(coloured(AnsiColour.red, maybe_add_space("Fatal error:", sep) + args, sep=sep), file=sys.stderr, flush=True)
-        if fixitHint:
-            print(coloured(AnsiColour.blue, "Possible solution:", fixitHint), file=sys.stderr, flush=True)
+        print(coloured(AnsiColour.red, maybe_add_space("Fatal error:", sep) + args, sep=sep), file=sys.stderr,
+              flush=True)
+        if fixit_hint:
+            print(coloured(AnsiColour.blue, "Possible solution:", fixit_hint), file=sys.stderr, flush=True)
         sys.exit(exit_code)
 
 
-def includeLocalFile(path: str) -> str:
+def include_local_file(path: str) -> str:
     file = Path(__file__).parent / path  # type: Path
     if not file.is_file():
-        fatalError(file, "is missing!")
+        fatal_error(file, "is missing!")
     with file.open("r", encoding="utf-8") as f:
         return f.read()
 
@@ -518,7 +534,7 @@ def have_working_internet_connection():
     except OSError:
         return False
     except Exception as ex:
-        fatalError("Something went wrong  while checking for internet connection", ex)
+        fatal_error("Something went wrong  while checking for internet connection", ex)
         return False
     finally:
         if x:
@@ -553,15 +569,15 @@ class OSInfo(object):
     __os_release_cache = None
 
     @classmethod
-    def isUbuntu(cls):
+    def is_ubuntu(cls):
         return cls.__is_linux_distribution("ubuntu")
 
     @classmethod
-    def isSuse(cls):
+    def is_suse(cls):
         return cls.__is_linux_distribution("suse") or cls.__is_linux_distribution("opensuse")
 
     @classmethod
-    def isDebian(cls):
+    def is_debian(cls):
         return cls.__is_linux_distribution("debian")
 
     @classmethod
@@ -631,7 +647,9 @@ class OSInfo(object):
                             if msg_start:
                                 hint = hint[msg_start:]
                             return hint
-                        return "Could not find package for program " + name + ". Maybe `zypper in " + name + "` will work."
+                        return "Could not find package for program " + name + ". Maybe `zypper in " + name + "` will " \
+                                                                                                             "work."
+
                     return command_not_found
                 guessed_package = True
                 install_name = "lib" + name + "-devel" if is_lib else name
@@ -641,25 +659,25 @@ class OSInfo(object):
         if guessed_package:
             # not sure if the package name is correct:
             return "Possibly running `" + cls.package_manager() + " install " + install_name + \
-                                  "` fixes this. Note: package name may not be correct."
+                   "` fixes this. Note: package name may not be correct."
         else:
             return "Run `" + cls.package_manager() + " install " + install_name + "`"
 
     @classmethod
     def uses_apt(cls):
-        return cls.isDebian() or cls.isUbuntu()
+        return cls.is_debian() or cls.is_ubuntu()
 
     @classmethod
     def uses_zypper(cls):
-        return cls.isSuse()
+        return cls.is_suse()
 
 
 @contextlib.contextmanager
-def setEnv(*, print_verbose_only=True, **environ):
+def set_env(*, print_verbose_only=True, **environ):
     """
     Temporarily set the process environment variables.
 
-    >>> with setEnv(PLUGINS_DIR=u'test/plugins'):
+    >>> with set_env(PLUGINS_DIR=u'test/plugins'):
     ...   "PLUGINS_DIR" in os.environ
     True
 
@@ -669,15 +687,83 @@ def setEnv(*, print_verbose_only=True, **environ):
     """
     old_environ = dict(os.environ)
     # make sure all environment variables are converted to string
-    str_environ = dict((str(k),str(v)) for k,v in environ.items())
+    str_environ = dict((str(k), str(v)) for k, v in environ.items())
     for k, v in str_environ.items():
-        printCommand("export", k + "=" + v, print_verbose_only=print_verbose_only)
+        print_command("export", k + "=" + v, print_verbose_only=print_verbose_only)
     os.environ.update(str_environ)
     try:
         yield
     finally:
         os.environ.clear()
         os.environ.update(old_environ)
+
+
+class TtyState:
+    # noinspection PyBroadException
+    def __init__(self, fd: "typing.TextIO"):
+        self.fd = fd
+        try:
+            self.attrs = termios.tcgetattr(fd)
+        except Exception:
+            # Can happen if sys.stdin/sys.stdout/sys.stderr is not a TTY
+            self.attrs = None
+        try:
+            self.flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        except Exception:
+            # Can happen if sys.stdin/sys.stdout/sys.stderr is not a real file.  When running tests with pytest, this
+            # will raise UnsupportedOperation("redirected stdin is pseudofile, has no fileno()")
+            self.flags = None
+
+    def _restore_attrs(self):
+        new_attrs = termios.tcgetattr(self.fd)
+        if new_attrs == self.attrs:
+            return
+        warning_message("TTY flags for", self.fd.name, "changed, resetting them")
+        print("Previous state", self.attrs)
+        print("New state", new_attrs)
+        termios.tcsetattr(self.fd, termios.TCSANOW, self.attrs)
+        termios.tcdrain(self.fd)
+        new_attrs = termios.tcgetattr(self.fd)
+        if new_attrs != self.attrs:
+            warning_message("Failed to restore TTY flags for", self.fd.name)
+            print("Previous state", self.attrs)
+            print("New state", new_attrs)
+
+    def _restore_flags(self):
+        new_flags = fcntl.fcntl(self.fd, fcntl.F_GETFL)
+        if new_flags == self.flags:
+            return
+        warning_message("FD flags for", self.fd.name, "changed, resetting them")
+        print("Previous flags", self.flags)
+        print("New flags", new_flags)
+        fcntl.fcntl(self.fd, fcntl.F_SETFL, self.flags)
+        new_flags = fcntl.fcntl(self.fd, fcntl.F_GETFL)
+        if new_flags != self.flags:
+            warning_message("Failed to restore TTY flags for", self.fd.name)
+            print("Previous flags", self.flags)
+            print("New flags", new_flags)
+
+    def restore(self):
+        if self.attrs is not None:  # Not a TTY
+            self._restore_attrs()
+        if self.flags is not None:  # Not a real file?
+            self._restore_flags()
+
+
+@contextlib.contextmanager
+def keep_terminal_sane():
+    # Programs such as QEMU can change the terminal state and if they don't exit cleanly this state is
+    # propagated to the shell that invoked cheribuild.
+    # This function attempts to restore the stdin/stdout/stderr state in those cases:
+    stdin_state = TtyState(sys.stdin)
+    stdout_state = TtyState(sys.stdout)
+    stderr_state = TtyState(sys.stderr)
+    try:
+        yield
+    finally:
+        stdin_state.restore()
+        stdout_state.restore()
+        stderr_state.restore()
 
 
 class ThreadJoiner(object):
@@ -691,8 +777,9 @@ class ThreadJoiner(object):
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.thread is not None:
             if self.thread.is_alive():
-                statusUpdate("Waiting for '", self.thread.name, "' to complete", sep="")
+                status_update("Waiting for '", self.thread.name, "' to complete", sep="")
             self.thread.join()
+
 
 # A dictionary for string formatting (format_map) that preserves values not
 # provided for later expansion

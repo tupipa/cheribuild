@@ -33,7 +33,7 @@ import shutil
 from pathlib import Path
 
 from .project import CheriConfig, DefaultInstallDir, GitRepository, MakeCommandKind, Project
-from ..utils import OSInfo, setEnv
+from ..utils import OSInfo, set_env
 
 SMB_OUT_OF_SOURCE_BUILD_WORKS = False
 
@@ -51,18 +51,18 @@ class BuildSamba(Project):
 
     def __init__(self, config: CheriConfig):
         super().__init__(config)
-        self.configureCommand = self.sourceDir / "configure"
+        self.configure_command = self.source_dir / "configure"
         if SMB_OUT_OF_SOURCE_BUILD_WORKS:
-            self.configureCommand = self.sourceDir / "buildtools/bin/waf"
-            self.configureArgs.insert(0, "configure")
-            self.make_args.set_command(self.sourceDir / "buildtools/bin/waf")
-            self.make_args.add_flags("--blddir=" + str(self.buildDir))
-            self.make_args.add_flags("--srcdir=" + str(self.sourceDir))
-            self.configureArgs.append("--blddir=" + str(self.buildDir))
-            self.configureArgs.append("--srcdir=" + str(self.sourceDir))
+            self.configure_command = self.source_dir / "buildtools/bin/waf"
+            self.configure_args.insert(0, "configure")
+            self.make_args.set_command(self.source_dir / "buildtools/bin/waf")
+            self.make_args.add_flags("--blddir=" + str(self.build_dir))
+            self.make_args.add_flags("--srcdir=" + str(self.source_dir))
+            self.configure_args.append("--blddir=" + str(self.build_dir))
+            self.configure_args.append("--srcdir=" + str(self.source_dir))
         # Based on https://willhaley.com/blog/compile-samba-macos/
         # Also try to disable everything that is not needed for QEMU user shares
-        self.configureArgs.extend([
+        self.configure_args.extend([
             "--disable-cephfs",
             "--disable-cups",
             "--disable-iprint",
@@ -85,45 +85,46 @@ class BuildSamba(Project):
             # Avoid depending on libraries from the build tree:
             "--bundled-libraries=talloc,tdb,pytdb,ldb,pyldb,tevent,pytevent",
             "--with-static-modules=ALL",
-            "--prefix=" + str(self.installDir),
-        ])
+            "--prefix=" + str(self.install_dir),
+            ])
         # Force python2 for now (since py3 seems broken)
-        self.configureEnvironment["PYTHON"] = shutil.which("python")
+        self.configure_environment["PYTHON"] = shutil.which("python")
         #  version 4.9 "--without-json-audit",
-        self.configureArgs.append("--without-json")
+        self.configure_args.append("--without-json")
         if OSInfo.IS_MAC:
             self.add_required_system_tool("/usr/local/opt/krb5/bin/kinit", homebrew="krb5")
             # TODO: brew --prefix krb5
-            self.configureArgs.extend(["--with-system-mitkrb5", "/usr/local/opt/krb5"])
+            self.configure_args.extend(["--with-system-mitkrb5", "/usr/local/opt/krb5"])
 
     def configure(self, **kwargs):
         # Add the yapp binary
-        self.configureEnvironment["PATH"] = os.getenv("PATH") + ":" + str(Path(shutil.which("perl")).resolve().parent)
-        super().configure(cwd=self.sourceDir, **kwargs)
+        self.configure_environment["PATH"] = os.getenv("PATH") + ":" + str(Path(shutil.which("perl")).resolve().parent)
+        super().configure(cwd=self.source_dir, **kwargs)
 
     def compile(self, **kwargs):
         if SMB_OUT_OF_SOURCE_BUILD_WORKS:
-            self.run_make("build", cwd=self.sourceDir)
+            self.run_make("build", cwd=self.source_dir)
         else:
             super().compile(**kwargs)
 
     def install(self, **kwargs):
         if SMB_OUT_OF_SOURCE_BUILD_WORKS:
-            self.run_make("install", cwd=self.sourceDir)
+            self.run_make("install", cwd=self.source_dir)
         else:
             super().install(**kwargs)
 
     def process(self):
         if OSInfo.IS_MAC:
             # We need readline and krb5 from homebrew:
-            with setEnv(PATH="/usr/local/opt/krb5/bin:/usr/local/opt/krb5/sbin:" + os.getenv("PATH", ""),
-                        PKG_CONFIG_PATH="/usr/local/opt/krb5/lib/pkgconfig:/usr/local/opt/readline/lib/pkgconfig:" + os.getenv("PKG_CONFIG_PATH", ""),
-                        LDFLAGS="-L/usr/local/opt/krb5/lib -L/usr/local/opt/readline/lib",
-                        CPPFLAGS="-I/usr/local/opt/krb5/include -I/usr/local/opt/readline/include",
-                        CFLAGS="-I/usr/local/opt/krb5/include -I/usr/local/opt/readline/include"):
+            with set_env(PATH="/usr/local/opt/krb5/bin:/usr/local/opt/krb5/sbin:" + os.getenv("PATH", ""),
+                         PKG_CONFIG_PATH="/usr/local/opt/krb5/lib/pkgconfig:/usr/local/opt/readline/lib/pkgconfig:" +
+                                         os.getenv("PKG_CONFIG_PATH", ""),
+                         LDFLAGS="-L/usr/local/opt/krb5/lib -L/usr/local/opt/readline/lib",
+                         CPPFLAGS="-I/usr/local/opt/krb5/include -I/usr/local/opt/readline/include",
+                         CFLAGS="-I/usr/local/opt/krb5/include -I/usr/local/opt/readline/include"):
                 super().process()
         else:
             super().process()
 
-    def needsConfigure(self):
+    def needs_configure(self):
         return True

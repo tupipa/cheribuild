@@ -28,13 +28,13 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
-from .crosscompileproject import (CompilationTargets, CrossCompileAutotoolsProject, DefaultInstallDir, GitRepository,
-                                  MakeCommandKind)
+from .crosscompileproject import (CrossCompileAutotoolsProject, DefaultInstallDir, FettProjectMixin,
+                                  GitRepository, MakeCommandKind)
 
 
 class BuildKCGI(CrossCompileAutotoolsProject):
     # Just add add the FETT target below for now.
-    doNotAddToTargets = True
+    do_not_add_to_targets = True
     build_in_source_dir = True
 
     repository = GitRepository("https://github.com/kristapsdz/kcgi.git")
@@ -51,15 +51,12 @@ class BuildKCGI(CrossCompileAutotoolsProject):
 
     def setup(self):
         super().setup()
-        self.configureArgs.append("PREFIX=" + str(self.installPrefix))
+        self.configure_args.append("PREFIX=" + str(self.install_prefix))
 
-    def needsConfigure(self):
-        return not (self.buildDir / "config.h").exists()
+    def needs_configure(self):
+        return not (self.build_dir / "config.h").exists()
 
 
-class BuildFettKCGI(BuildKCGI):
+class BuildFettKCGI(FettProjectMixin, BuildKCGI):
     project_name = "fett-kcgi"
-    path_in_rootfs = "/fett"
-    default_architecture = CompilationTargets.FETT_DEFAULT_ARCHITECTURE
-    repository = GitRepository("https://github.com/CTSRD-CHERI/kcgi.git",
-                               default_branch="fett")
+    repository = GitRepository("https://github.com/CTSRD-CHERI/kcgi.git", default_branch="fett")

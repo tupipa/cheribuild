@@ -29,18 +29,25 @@
 #
 
 import os
+import typing
 from enum import Enum
 from pathlib import Path
 
 from .chericonfig import CheriConfig
-from .compilation_targets import CompilationTargets
+from .compilation_targets import CompilationTargets, CrossCompileTarget
 from .loader import ConfigLoaderBase
 from ..filesystemutils import FileSystemUtils
-from ..utils import defaultNumberOfMakeJobs, fatalError, OSInfo, warningMessage
+from ..utils import default_make_jobs_count, fatal_error, OSInfo, warning_message
 
 
-def default_install_prefix(conf: "JenkinsConfig", unused):
+def default_install_prefix(conf: "JenkinsConfig", _):
     return "/opt/" + conf.targets[0]
+
+
+def default_jenkins_make_jobs_count(conf: "JenkinsConfig", _):
+    if conf.use_all_cores:
+        return os.cpu_count()
+    return default_make_jobs_count()
 
 
 class JenkinsAction(Enum):
@@ -48,6 +55,7 @@ class JenkinsAction(Enum):
     CREATE_TARBALL = ("--create-tarball", "Create an archive of the installed files", "--tarball")
     TEST = ("--test", "Run tests")
     EXTRACT_SDK = ("--extract-sdk", "Extract the SDK archive and then exit")
+
     # TODO: TEST = ("--test", "Run tests for the passed targets instead of building them", "--run-tests")
 
     def __init__(self, option_name, help_message, altname=None, actions=None):
@@ -70,66 +78,76 @@ def absolute_path_only(p: str) -> Path:
 
 
 class JenkinsConfig(CheriConfig):
-    def __init__(self, loader: ConfigLoaderBase, availableTargets: list):
+    def __init__(self, loader: ConfigLoaderBase, available_targets: list):
         super().__init__(loader, action_class=JenkinsAction)
         self.default_action = ""  # error if no action set
 
-        self.cpu = loader.addCommandLineOnlyOption("cpu", default=os.getenv("CPU", "default"),
-                                                   help="The target to build the software for (defaults to $CPU).",
-                                                   choices=["default", "cheri128", "mips", "hybrid-cheri128",
-                                                            "riscv64", "riscv64-hybrid", "riscv64-purecap",
-                                                            "native", "x86", "amd64"])  # type: str
-        self.workspace = loader.addCommandLineOnlyOption("workspace", default=os.getenv("WORKSPACE"), type=Path,
-                                                         help="The root directory for building (defaults to $WORKSPACE)")  # type: Path
-        self.sdkArchiveName = loader.addCommandLineOnlyOption("sdk-archive", type=str, default=os.getenv("SDK_ARCHIVE"),
-                                                              help="The name of the sdk archive")  # type: str
-        self.keepInstallDir = loader.addCommandLineOnlyBoolOption("keep-install-dir",
-                                                                  help="Don't delete the install dir prior to build")  # type: bool
-        self.keepSdkDir = loader.addCommandLineOnlyBoolOption("keep-sdk-dir", help="Don't delete existing SDK dir even"
-                                                                                   " if there is a newer archive")  # type: bool
-        self.force_update = loader.addCommandLineOnlyBoolOption("force-update",
-                                                                help="Do the updating (not recommended in jenkins!)")  # type: bool
+        self.cpu = loader.add_commandline_only_option("cpu", default=os.getenv("CPU", "default"),
+                                                      help="The target to build the software for (defaults to $CPU).",
+                                                      choices=["default", "cheri128", "mips", "hybrid-cheri128",
+                                                               "riscv64", "riscv64-hybrid", "riscv64-purecap",
+                                                               "native", "x86", "amd64"])  # type: str
+        self.workspace = loader.add_commandline_only_option("workspace", default=os.getenv("WORKSPACE"), type=Path,
+                                                            help="The root directory for building (defaults to "
+                                                                 "$WORKSPACE)")  # type: Path
+        self.sdk_archive_name = loader.add_commandline_only_option("sdk-archive", type=str,
+                                                                   default=os.getenv("SDK_ARCHIVE"),
+                                                                   help="The name of the sdk archive")  # type: str
+        self.keep_install_dir = loader.add_commandline_only_bool_option("keep-install-dir",
+                                                                        help="Don't delete the install dir prior to "
+                                                                             "build")  # type: bool
+        self.keep_sdk_dir = loader.add_commandline_only_bool_option("keep-sdk-dir",
+                                                                    help="Don't delete existing SDK dir even"
+                                                                         " if there is a newer archive")  # type: bool
+        self.force_update = loader.add_commandline_only_bool_option("force-update",
+                                                                    help="Do the updating (not recommended in "
+                                                                         "jenkins!)")  # type: bool
         self.copy_compilation_db_to_source_dir = False
-        self.makeWithoutNice = False
+        self.make_without_nice = False
 
-        self.makeJobs = loader.addCommandLineOnlyOption("make-jobs", "j", type=int,
-                                                        default=defaultNumberOfMakeJobs(),
-                                                        help="Number of jobs to use for compiling")
-        self.installationPrefix = loader.addCommandLineOnlyOption("install-prefix", type=absolute_path_only,
-                                                                  default=default_install_prefix,
-                                                                  help="The install prefix for cross compiled projects"
-                                                                       " (the path where it will end up in the install"
-                                                                       " image)")  # type: Path
-        self.without_sdk = loader.addCommandLineOnlyBoolOption("without-sdk", help="Don't use the CHERI SDK -> only /usr (for native builds)")
-        self.strip_elf_files = loader.addCommandLineOnlyBoolOption("strip-elf-files", help="Strip ELF files before creating the tarball", default=True)
-        self.cheri_sdk_path = loader.addCommandLineOnlyOption("cheri-sdk-path", default=None, type=Path,
-                                                              help="Override the path to the CHERI SDK (default is $WORKSPACE/cherisdk)")  # type: Path
-        self.extract_compiler_only = loader.addCommandLineOnlyBoolOption("extract-compiler-only",
-                                                                         help="Don't attempt to extract the CheriBSD sysroot")
-        self.tarball_name = loader.addCommandLineOnlyOption("tarball-name",
-            default=lambda conf, cls: conf.targets[0] + "-" + conf.cpu + ".tar.xz")
+        self.make_jobs = loader.add_commandline_only_option("make-jobs", "j", type=int,
+                                                            default=default_jenkins_make_jobs_count,
+                                                            help="Number of jobs to use for compiling")
+        self.use_all_cores = loader.add_commandline_only_bool_option("use-all-cores",
+                                                                     help="Use all available cores for building ("
+                                                                          "Note: Should only be used for LLVM or "
+                                                                          "short-running jobs!)")
+        self.installation_prefix = loader.add_commandline_only_option(
+            "install-prefix", type=absolute_path_only, default=default_install_prefix,
+            help="The install prefix for cross compiled projects (the path in the install image)")  # type: Path
+        self.without_sdk = loader.add_commandline_only_bool_option(
+            "without-sdk", help="Don't use the CHERI SDK -> only /usr (for native builds)")
+        self.strip_elf_files = loader.add_commandline_only_bool_option(
+            "strip-elf-files", help="Strip ELF files before creating the tarball", default=True)
+        self.cheri_sdk_path = loader.add_commandline_only_option("cheri-sdk-path", default=None, type=Path,
+                                                                 help="Override the path to the CHERI SDK (default is "
+                                                                      "$WORKSPACE/cherisdk)")  # type: Path
+        self.extract_compiler_only = loader.add_commandline_only_bool_option("extract-compiler-only",
+                                                                             help="Don't attempt to extract the "
+                                                                                  "CheriBSD sysroot")
+        self.tarball_name = loader.add_commandline_only_option(
+            "tarball-name", default=lambda conf, cls: conf.targets[0] + "-" + conf.cpu + ".tar.xz")
 
         self.default_output_path = "tarball"
-        self.output_path = loader.addCommandLineOnlyOption("output-path", default=self.default_output_path,
-                                                           help="Path for the output (relative to $WORKSPACE)")
+        self.output_path = loader.add_commandline_only_option("output-path", default=self.default_output_path,
+                                                              help="Path for the output (relative to $WORKSPACE)")
 
-        # self.strip_install_prefix_from_archive = loader.addCommandLineOnlyBoolOption("strip-install-prefix-from-archive",
-        #    help="Only put the files inside the install prefix into the tarball (stripping the leading directories)")  # type: bool
-        self.skipUpdate = True
-        self.skipClone = True
+        # self.strip_install_prefix_from_archive = loader.add_commandline_only_bool_option(
+        # "strip-install-prefix-from-archive",
+        #    help="Only put the files inside the install prefix into the tarball (stripping the leading
+        #    directories)")  # type: bool
+        self.skip_update = True
+        self.skip_clone = True
         self.verbose = True
         self.quiet = False
-        self.clean = loader.addCommandLineOnlyBoolOption("clean", default=True,
-                                                         help="Clean build directory before building")
+        self.clean = loader.add_commandline_only_bool_option("clean", default=True,
+                                                             help="Clean build directory before building")
         self.force = True  # no user input in jenkins
         self.write_logfile = False  # jenkins stores the output anyway
-        self.skipConfigure = False
-        self.forceConfigure = True
-        # self.listTargets = False
-        # self.dumpConfig = False
-        # self.getConfigOption = None
-        self.includeDependencies = False
-        loader.finalizeOptions(availableTargets)
+        self.skip_configure = loader.add_bool_option("skip-configure", help="Skip the configure step")
+        self.force_configure = True
+        self.include_dependencies = False
+        loader.finalize_options(available_targets)
         self.FS = FileSystemUtils(self)
 
     @property
@@ -145,22 +163,22 @@ class JenkinsConfig(CheriConfig):
             if self.cpu == "hybrid-cheri128":
                 return "cheri128"
             else:
-                warningMessage("SDK_CPU variable not set, cannot infer the name of the SDK archive")
+                warning_message("SDK_CPU variable not set, cannot infer the name of the SDK archive")
                 return "unknown-cpu"
         return sdk_cpu
 
     @property
-    def sdkArchivePath(self):
-        if self.sdkArchiveName is None:
-            self.sdkArchiveName = "{}-{}-sdk.tar.xz".format(self.sdk_cpu, self.cheri_sdk_isa_name)
-        assert isinstance(self.sdkArchiveName, str)
-        return self.workspace / self.sdkArchiveName
+    def sdk_archive_path(self):
+        if self.sdk_archive_name is None:
+            self.sdk_archive_name = "{}-{}-sdk.tar.xz".format(self.sdk_cpu, self.cheri_sdk_isa_name)
+        assert isinstance(self.sdk_archive_name, str)
+        return self.workspace / self.sdk_archive_name
 
     @property
     def cheri_sdk_isa_name(self):
-        guessed_abi_suffix = "cap-table-" + self.cheri_cap_table_abi
-        if self.cheri_cap_table_abi == "legacy":
-            guessed_abi_suffix = "legacy"
+        guessed_abi_suffix = ""
+        if self.cheri_cap_table_abi:
+            guessed_abi_suffix = "cap-table-" + self.cheri_cap_table_abi
         return os.getenv("ISA", guessed_abi_suffix)
 
     @property
@@ -184,19 +202,19 @@ class JenkinsConfig(CheriConfig):
         super().load()
 
         if not self.workspace or not self.workspace.is_dir():
-            fatalError("WORKSPACE is not set to a valid directory:", self.workspace)
-        self.sourceRoot = self.workspace
-        self.buildRoot = self.workspace
+            fatal_error("WORKSPACE is not set to a valid directory:", self.workspace)
+        self.source_root = self.workspace
+        self.build_root = self.workspace
         if self.output_path != self.default_output_path:
-            if not self.keepInstallDir:
+            if not self.keep_install_dir:
                 print("Not cleaning non-default output path", self.workspace / self.output_path)
-            self.keepInstallDir = True
-        self.outputRoot = self.workspace / self.output_path
+            self.keep_install_dir = True
+        self.output_root = self.workspace / self.output_path
 
         # expect the CheriBSD disk images in the workspace root
         self.cheribsd_image_root = self.workspace
 
-        self.otherToolsDir = self.workspace / "bootstrap"
+        self.other_tools_dir = self.workspace / "bootstrap"
         # check for ctsrd/cheri-sdk-{cheri128,mips} docker image
         if self.cheri_sdk_path is not None:
             self.cheri_sdk_dir = self.cheri_sdk_path
@@ -204,7 +222,7 @@ class JenkinsConfig(CheriConfig):
             self.cheri_sdk_dir = Path("/cheri-sdk")
         else:
             self.cheri_sdk_dir = self.workspace / self.cheri_sdk_directory_name
-        self.preferred_xtarget = self.cpu
+        self.preferred_xtarget = None  # type: typing.Optional[CrossCompileTarget]
         if self.cpu == "default":
             self.preferred_xtarget = None
         elif self.cpu == "cheri128":
@@ -226,38 +244,33 @@ class JenkinsConfig(CheriConfig):
         elif self.cpu in ("x86", "x86_64", "amd64", "host", "native"):
             self.preferred_xtarget = CompilationTargets.NATIVE
         else:
-            fatalError("CPU is not set to a valid value:", self.cpu)
-
-        if OSInfo.IS_MAC and self.preferred_xtarget is not None and self.preferred_xtarget.is_native():
-            self.without_sdk = True  # cannot build macos binaries with lld
+            fatal_error("CPU is not set to a valid value:", self.cpu)
 
         if self.force_update:
-            self.skipUpdate = False
-            self.skipClone = False
+            self.skip_update = False
+            self.skip_clone = False
 
         if self.without_sdk:
-            if not self.preferred_xtarget.is_native():
-                fatalError("The --without-sdk flag only works when building host binaries")
-            self.cheri_sdk_dir = self.outputRoot / str(self.installationPrefix).strip('/')
+            self.cheri_sdk_dir = self.output_root / str(self.installation_prefix).strip('/')
             # allow overriding the clang/clang++ paths with HOST_CC/HOST_CXX
-            self.clangPath = Path(os.getenv("HOST_CC", self.clangPath))
-            self.clangPlusPlusPath = Path(os.getenv("HOST_CXX", self.clangPlusPlusPath))
-            self.clangCppPath = Path(os.getenv("HOST_CPP", self.clangCppPath))
-            if not self.clangPath.exists():
-                fatalError("C compiler", self.clangPath, "does not exit. Pass --clang-path or set $HOST_CC")
-            if not self.clangPlusPlusPath.exists():
-                fatalError("C++ compiler", self.clangPlusPlusPath, "does not exit. Pass --clang++-path or set $HOST_CXX")
-            if not self.clangCppPath.exists():
-                fatalError("C pre-processor", self.clangCppPath, "does not exit. Pass --clang-cpp-path or set $HOST_CPP")
+            self.clang_path = Path(os.getenv("HOST_CC", self.clang_path))
+            self.clang_plusplus_path = Path(os.getenv("HOST_CXX", self.clang_plusplus_path))
+            self.clang_cpp_path = Path(os.getenv("HOST_CPP", self.clang_cpp_path))
+            if not self.clang_path.exists():
+                fatal_error("C compiler", self.clang_path, "does not exit. Pass --clang-path or set $HOST_CC")
+            if not self.clang_plusplus_path.exists():
+                fatal_error("C++ compiler", self.clang_plusplus_path,
+                            "does not exit. Pass --clang++-path or set $HOST_CXX")
+            if not self.clang_cpp_path.exists():
+                fatal_error("C pre-processor", self.clang_cpp_path,
+                            "does not exit. Pass --clang-cpp-path or set $HOST_CPP")
         else:
             # always use the CHERI clang built by jenkins
-            self.clangPath = self.cheri_sdk_bindir / "clang"
-            self.clangPlusPlusPath = self.cheri_sdk_bindir / "clang++"
+            self.clang_path = self.cheri_sdk_bindir / "clang"
+            self.clang_plusplus_path = self.cheri_sdk_bindir / "clang++"
 
         if self.cheri_sdk_path is not None:
             assert self.cheri_sdk_bindir == self.cheri_sdk_path / "bin"
-
-        self._initializeDerivedPaths()
 
         assert self._ensure_required_properties_set()
         if os.getenv("DEBUG") is not None:

@@ -1,10 +1,13 @@
+# -
+# SPDX-License-Identifier: BSD-2-Clause
 #
-# Copyright (c) 2018 Alex Richardson
+# Copyright (c) 2020 A. Theodore Markettos
 # All rights reserved.
 #
 # This software was developed by SRI International and the University of
-# Cambridge Computer Laboratory under DARPA/AFRL contract FA8750-10-C-0237
-# ("CTSRD"), as part of the DARPA CRASH research programme.
+# Cambridge Computer Laboratory (Department of Computer Science and
+# Technology) under DARPA contract HR0011-18-C-0016 ("ECATS"), as part of the
+# DARPA SSITH research programme.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -27,19 +30,18 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
-from .project import CMakeProject, DefaultInstallDir, GitRepository
+
+from .crosscompileproject import CompilationTargets, CrossCompileAutotoolsProject, DefaultInstallDir, GitRepository
 
 
-class BuildBsdTar(CMakeProject):
-    repository = GitRepository("https://github.com/libarchive/libarchive.git")
-    native_install_dir = DefaultInstallDir.BOOTSTRAP_TOOLS
-
-    def configure(self, **kwargs):
-        self.add_cmake_options(ENABLE_TAR_SHARED=False)
-        super().configure(**kwargs)
-
-    def compile(self, **kwargs):
-        self.run_make("bsdtar")
+class BuildDeviceModel(CrossCompileAutotoolsProject):
+    repository = GitRepository("https://github.com/CTSRD-CHERI/device-model")
+    target = "device-model"
+    is_sdk_target = True
+    needs_sysroot = False  # We don't need a complete sysroot
+    supported_architectures = [CompilationTargets.BAREMETAL_NEWLIB_MIPS64]
+    default_install_dir = DefaultInstallDir.SYSROOT
+    build_in_source_dir = True  # Cannot build out-of-source
 
     def install(self, **kwargs):
-        self.install_file(self.build_dir / "bin/bsdtar", self.install_dir / "bin/bsdtar", print_verbose_only=False)
+        self.install_file(self.build_dir / "obj/device-model.bin", self.real_install_root_dir / "device-model.bin")

@@ -39,7 +39,7 @@ from .project import (AutotoolsProject, BuildType, CheriConfig, CrossCompileTarg
                       MakeCommandKind, SimpleProject)
 from ..config.compilation_targets import CompilationTargets, NewlibBaremetalTargetInfo
 from ..config.loader import ComputedDefaultValue
-from ..utils import commandline_to_str, getCompilerInfo
+from ..utils import commandline_to_str, get_compiler_info
 
 
 class BuildQEMUBase(AutotoolsProject):
@@ -47,9 +47,9 @@ class BuildQEMUBase(AutotoolsProject):
     native_install_dir = DefaultInstallDir.CHERI_SDK
     # QEMU will not work with BSD make, need GNU make
     make_kind = MakeCommandKind.GnuMake
-    doNotAddToTargets = True
+    do_not_add_to_targets = True
     is_sdk_target = True
-    skipGitSubmodules = True  # we don't need these
+    skip_git_submodules = True  # we don't need these
     can_build_with_asan = True
     default_targets = "some-invalid-target"
     lto_by_default = True
@@ -60,22 +60,26 @@ class BuildQEMUBase(AutotoolsProject):
 
     @classmethod
     def setup_config_options(cls, **kwargs):
-        super().setup_config_options()
-        cls.with_sanitizers = cls.add_bool_option("sanitizers", help="Build QEMU with ASAN/UBSAN (very slow)", default=False)
+        super().setup_config_options(**kwargs)
+        cls.with_sanitizers = cls.add_bool_option("sanitizers", help="Build QEMU with ASAN/UBSAN (very slow)",
+                                                  default=False)
         cls.use_smbd = cls.add_bool_option("use-smbd", show_help=False, default=True,
-                                         help="Don't require SMB support when building QEMU (warning: most --test "
-                                              "targets will fail without smbd support)")
+                                           help="Don't require SMB support when building QEMU (warning: most --test "
+                                                "targets will fail without smbd support)")
 
         cls.gui = cls.add_bool_option("gui", show_help=True, default=False,
-                                    help="Build a the graphical UI bits for QEMU (SDL,VNC)")
+                                      help="Build a the graphical UI bits for QEMU (SDL,VNC)")
+
         cls.mem_color = cls.add_bool_option("mem-color", show_help=True, default=False,
                                     help="enable memory color build option in QEMU")
         cls.simple_trace = cls.add_bool_option("simple-trace", show_help=True, default=False,
                                     help="enable the simple trace backend in QEMU")
+
         cls.qemu_targets = cls.add_config_option("targets",
-            show_help=True, help="Build QEMU for the following targets", default=cls.default_targets)
+                                                 show_help=True, help="Build QEMU for the following targets",
+                                                 default=cls.default_targets)
         cls.prefer_full_lto_over_thin_lto = cls.add_bool_option("full-lto", show_help=False, default=True,
-            help="Prefer full LTO over LLVM ThinLTO when using LTO")
+                                                                help="Prefer full LTO over LLVM ThinLTO when using LTO")
 
     @classmethod
     def qemu_cheri_binary(cls, caller: SimpleProject):
@@ -83,16 +87,18 @@ class BuildQEMUBase(AutotoolsProject):
 
     def __init__(self, config: CheriConfig):
         super().__init__(config)
-        self.add_required_system_tool("glibtoolize" if self.target_info.is_macos() else "libtoolize", homebrew="libtool")
+        self.add_required_system_tool("glibtoolize" if self.target_info.is_macos() else "libtoolize",
+                                      homebrew="libtool")
         self.add_required_system_tool("autoreconf", homebrew="autoconf")
         self.add_required_system_tool("aclocal", homebrew="automake")
 
-        self._addRequiredPkgConfig("pixman-1", homebrew="pixman", zypper="libpixman-1-0-devel", apt="libpixman-1-dev",
-                                   freebsd="pixman")
-        self._addRequiredPkgConfig("glib-2.0", homebrew="glib", zypper="glib2-devel", apt="libglib2.0-dev",
-                                   freebsd="glib")
+        self.add_required_pkg_config("pixman-1", homebrew="pixman", zypper="libpixman-1-0-devel", apt="libpixman-1-dev",
+                                     freebsd="pixman")
+        self.add_required_pkg_config("glib-2.0", homebrew="glib", zypper="glib2-devel", apt="libglib2.0-dev",
+                                     freebsd="glib")
         # Tests require GNU sed
-        self.add_required_system_tool("sed" if self.target_info.is_linux() else "gsed", homebrew="gnu-sed", freebsd="gsed")
+        self.add_required_system_tool("sed" if self.target_info.is_linux() else "gsed", homebrew="gnu-sed",
+                                      freebsd="gsed")
 
         if self.build_type == BuildType.DEBUG:
             self.COMMON_FLAGS.append("-DCONFIG_DEBUG_TCG=1")
@@ -100,8 +106,9 @@ class BuildQEMUBase(AutotoolsProject):
         else:
             self.COMMON_FLAGS.append("-O3")
         if shutil.which("pkg-config"):
-            glib_includes = self.run_cmd("pkg-config", "--cflags-only-I", "glib-2.0", captureOutput=True,
-                                         print_verbose_only=True, runInPretendMode=True).stdout.decode("utf-8").strip()
+            glib_includes = self.run_cmd("pkg-config", "--cflags-only-I", "glib-2.0", capture_output=True,
+                                         print_verbose_only=True, run_in_pretend_mode=True).stdout.decode(
+                "utf-8").strip()
             self.COMMON_FLAGS.extend(shlex.split(glib_includes))
 
         if self.simple_trace:
@@ -109,31 +116,31 @@ class BuildQEMUBase(AutotoolsProject):
         
         # Disable some more unneeded things (we don't usually need the GUI frontends)
         if not self.gui:
-            self.configureArgs.extend(["--disable-vnc", "--disable-sdl", "--disable-gtk", "--disable-opengl"])
+            self.configure_args.extend(["--disable-vnc", "--disable-sdl", "--disable-gtk", "--disable-opengl"])
             if self.target_info.is_macos():
-                self.configureArgs.append("--disable-cocoa")
+                self.configure_args.append("--disable-cocoa")
 
         # QEMU now builds with python3
-        self.configureArgs.append("--python=" + sys.executable)
+        self.configure_args.append("--python=" + sys.executable)
         if self.build_type == BuildType.DEBUG:
-            self.configureArgs.extend(["--enable-debug", "--enable-debug-tcg"])
+            self.configure_args.extend(["--enable-debug", "--enable-debug-tcg"])
         else:
             # Try to optimize as much as possible:
-            self.configureArgs.extend(["--disable-stack-protector"])
+            self.configure_args.extend(["--disable-stack-protector"])
 
         if self.with_sanitizers:
             self.warning("Option --qemu/sanitizers is deprecated, use --qemu/use-asan instead")
         if self.with_sanitizers or self.use_asan:
-            self.configureArgs.append("--enable-sanitizers")
+            self.configure_args.append("--enable-sanitizers")
             if self.use_lto:
                 self.info("Disabling LTO for ASAN instrumented builds")
             self.use_lto = False
 
         # Having symbol information is useful for debugging and profiling
-        self.configureArgs.append("--disable-strip")
+        self.configure_args.append("--disable-strip")
 
         if not self.target_info.is_linux():
-            self.configureArgs.extend(["--disable-linux-aio", "--disable-kvm"])
+            self.configure_args.extend(["--disable-linux-aio", "--disable-kvm"])
 
         if self.config.verbose:
             self.make_args.set(V=1)
@@ -141,7 +148,7 @@ class BuildQEMUBase(AutotoolsProject):
     def setup(self):
         super().setup()
         compiler = self.CC
-        ccinfo = getCompilerInfo(compiler)
+        ccinfo = get_compiler_info(compiler)
         if ccinfo.compiler == "apple-clang" or (ccinfo.compiler == "clang" and ccinfo.version >= (4, 0, 0)):
             # Turn implicit function declaration into an error -Wimplicit-function-declaration
             self.CFLAGS.extend(["-Werror=implicit-function-declaration",
@@ -161,20 +168,20 @@ class BuildQEMUBase(AutotoolsProject):
                 smbd_path = "/usr/local/sbin/smbd"
             elif self.target_info.is_macos():
                 try:
-                    prefix = self.run_cmd("brew", "--prefix", "samba", captureOutput=True, runInPretendMode=True,
+                    prefix = self.run_cmd("brew", "--prefix", "samba", capture_output=True, run_in_pretend_mode=True,
                                           print_verbose_only=True).stdout.decode("utf-8").strip()
                 except subprocess.CalledProcessError:
-                    prefix = self.config.otherToolsDir
+                    prefix = self.config.other_tools_dir
                 smbd_path = Path(prefix, "sbin/smbd")
                 print("Guessed samba path", smbd_path)
 
-            if (self.config.otherToolsDir / "sbin/smbd").exists():
-                smbd_path = self.config.otherToolsDir / "sbin/smbd"
+            if (self.config.other_tools_dir / "sbin/smbd").exists():
+                smbd_path = self.config.other_tools_dir / "sbin/smbd"
 
             self.add_required_system_tool(smbd_path, cheribuild_target="samba", freebsd="samba48", apt="samba",
-                                       homebrew="samba")
+                                          homebrew="samba")
 
-            self.configureArgs.append("--smbd=" + str(smbd_path))
+            self.configure_args.append("--smbd=" + str(smbd_path))
             if not Path(smbd_path).exists():
                 if self.target_info.is_macos():
                     # QEMU user networking expects a smbd that accepts the same flags and config files as the samba.org
@@ -183,11 +190,11 @@ class BuildQEMUBase(AutotoolsProject):
                                  "from source (using `cheribuild.py samba`) since the /usr/sbin/smbd shipped by MacOS"
                                  " is incompatible with QEMU")
                 self.fatal("Could not find smbd -> QEMU SMB shares networking will not work",
-                           fixitHint="Either install samba using the system package manager or with cheribuild. "
-                                     "If you really don't need QEMU host shares you can disable the samba dependency "
-                                     "by setting --qemu/no-use-smbd")
+                           fixit_hint="Either install samba using the system package manager or with cheribuild. "
+                                      "If you really don't need QEMU host shares you can disable the samba dependency "
+                                      "by setting --qemu/no-use-smbd")
 
-        self.configureArgs.extend([
+        self.configure_args.extend([
             "--target-list=" + self.qemu_targets,
             "--enable-slirp=git",
             "--disable-linux-user",
@@ -210,21 +217,21 @@ class BuildQEMUBase(AutotoolsProject):
             self.make_args.set(V=1)  # Otherwise bear can't parse the compiler output
         ldflags = self.default_ldflags + self.LDFLAGS
         if ldflags:
-            self.configureArgs.append("--extra-ldflags=" + commandline_to_str(ldflags))
+            self.configure_args.append("--extra-ldflags=" + commandline_to_str(ldflags))
         cxxflags = self.default_compiler_flags + self.CXXFLAGS
         if cxxflags:
-            self.configureArgs.append("--extra-cxxflags=" + commandline_to_str(cxxflags))
+            self.configure_args.append("--extra-cxxflags=" + commandline_to_str(cxxflags))
 
     def run_tests(self):
-        self.run_make("check", cwd=self.buildDir)
+        self.run_make("check", cwd=self.build_dir)
 
     def update(self):
         # the build sometimes modifies the po/ subdirectory
         # reset that directory by checking out the HEAD revision there
         # this is better than git reset --hard as we don't lose any other changes
-        if (self.sourceDir / "po").is_dir() and not self.config.skipUpdate:
-            self.run_cmd("git", "checkout", "HEAD", "po/", cwd=self.sourceDir, print_verbose_only=True)
-        if (self.sourceDir / "pixman/pixman").exists():
+        if (self.source_dir / "po").is_dir() and not self.config.skip_update:
+            self.run_cmd("git", "checkout", "HEAD", "po/", cwd=self.source_dir, print_verbose_only=True)
+        if (self.source_dir / "pixman/pixman").exists():
             self.warning("QEMU might build the broken pixman submodule, run `git submodule deinit -f pixman` to clean")
         super().update()
 
@@ -234,7 +241,7 @@ class BuildQEMU(BuildQEMUBase):
                                force_branch=True)
     default_targets = "cheri128-softmmu,mips64-softmmu," \
                       "riscv64-softmmu,riscv64cheri-softmmu,riscv32-softmmu," \
-                      "x86_64-softmmu"
+                      "x86_64-softmmu,aarch64-softmmu"
 
     @classmethod
     def setup_config_options(cls, **kwargs):
@@ -243,10 +250,10 @@ class BuildQEMU(BuildQEMUBase):
         cls.unaligned = cls.add_bool_option("unaligned", show_help=True, help="Permit un-aligned loads/stores",
                                             default=False)
         cls.statistics = cls.add_bool_option("statistics", show_help=True,
-                                           help="Collect statistics on out-of-bounds capability creation.")
+                                             help="Collect statistics on out-of-bounds capability creation.")
 
     @classmethod
-    def qemu_cheri_binary(cls, caller: SimpleProject, xtarget: CrossCompileTarget=None):
+    def qemu_cheri_binary(cls, caller: SimpleProject, xtarget: CrossCompileTarget = None):
         if xtarget is None:
             xtarget = caller.get_crosscompile_target(caller.config)
         if xtarget.is_riscv(include_purecap=True):
@@ -273,7 +280,7 @@ class BuildQEMU(BuildQEMUBase):
         if self.build_type == BuildType.DEBUG:
             self.COMMON_FLAGS.append("-DENABLE_CHERI_SANITIY_CHECKS=1")
         # the capstone disassembler doesn't support CHERI instructions:
-        self.configureArgs.append("--disable-capstone")
+        self.configure_args.append("--disable-capstone")
         # TODO: tests:
         # noinspection PyUnreachableCode
         if False:
@@ -287,11 +294,13 @@ class BuildQEMU(BuildQEMUBase):
             tgt_info_mips = NewlibBaremetalTargetInfo(CompilationTargets.BAREMETAL_NEWLIB_MIPS64, fake_project)
             # noinspection PyTypeChecker
             tgt_info_riscv64 = NewlibBaremetalTargetInfo(CompilationTargets.BAREMETAL_NEWLIB_RISCV64, fake_project)
-            self.configureArgs.extend([
+            self.configure_args.extend([
                 "--cross-cc-mips=" + str(tgt_info_mips.c_compiler),
-                "--cross-cc-cflags-mips=" + commandline_to_str(tgt_info_mips.essential_compiler_and_linker_flags).replace("=", " "),
+                "--cross-cc-cflags-mips=" + commandline_to_str(
+                    tgt_info_mips.essential_compiler_and_linker_flags).replace("=", " "),
                 "--cross-cc-riscv64=" + str(tgt_info_riscv64.c_compiler),
-                "--cross-cc-cflags-riscv64=" + commandline_to_str(tgt_info_riscv64.essential_compiler_and_linker_flags).replace("=", " ")
+                "--cross-cc-cflags-riscv64=" + commandline_to_str(
+                    tgt_info_riscv64.essential_compiler_and_linker_flags).replace("=", " ")
                 ])
 
 
@@ -301,7 +310,7 @@ class BuildCheriOSQEMU(BuildQEMU):
     project_name = "cherios-qemu"
     target = "cherios-qemu"
     _default_install_dir_fn = ComputedDefaultValue(
-        function=lambda config, project: config.outputRoot / "cherios-sdk",
+        function=lambda config, project: config.output_root / "cherios-sdk",
         as_string="$INSTALL_ROOT/cherios-sdk")
     skip_misc_llvm_tools = False  # Cannot skip these tools in upstream LLVM
 
@@ -309,7 +318,7 @@ class BuildCheriOSQEMU(BuildQEMU):
         super().__init__(config)
 
     @classmethod
-    def qemu_binary(cls, caller: SimpleProject, xtarget=None):
+    def qemu_binary(cls, caller: SimpleProject, _=None):
         binary_name = "qemu-system-cheri" + caller.config.mips_cheri_bits_str
         return cls.get_instance(caller, caller.config,
-                                cross_target=CompilationTargets.NATIVE).installDir / "bin" / binary_name
+                                cross_target=CompilationTargets.NATIVE).install_dir / "bin" / binary_name

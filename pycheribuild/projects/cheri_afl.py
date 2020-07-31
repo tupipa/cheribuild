@@ -37,8 +37,7 @@ class BuildAflCheriNinja(Project):
     repository = GitRepository("https://github.com/CTSRD-CHERI/AFL-CHERI")
     native_install_dir = DefaultInstallDir.CHERI_SDK
     make_kind = MakeCommandKind.GnuMake
-
-    defaultBuildDir = Project.defaultSourceDir  # we have to build in the source directory
+    build_in_source_dir = True
 
     def configure(self, **kwargs):
         pass
@@ -48,25 +47,32 @@ class BuildAflCheriNinja(Project):
         self.make_args.env_vars["SDK_PATH"] = self.config.cheri_sdk_dir
         self.make_args.env_vars["XCC"] = self.config.cheri_sdk_bindir / "clang"
         self.make_args.env_vars["LLVM_CONFIG"] = self.config.cheri_sdk_bindir / "llvm-config"
-        cheri_mips_sysroot = BuildCHERIBSD.get_instance(self,
-            cross_target=CompilationTargets.CHERIBSD_MIPS_HYBRID).target_info.sysroot_dir
-        base_xcflags = "-target mips64-unknown-freebsd13 -mcpu=beri -integrated-as -msoft-float --sysroot=" + str(cheri_mips_sysroot)
+        cheribsd_mips_hybrid = BuildCHERIBSD.get_instance(self, cross_target=CompilationTargets.CHERIBSD_MIPS_HYBRID)
+        cheri_mips_sysroot = cheribsd_mips_hybrid.target_info.sysroot_dir
+        base_xcflags = "-target mips64-unknown-freebsd13 -mcpu=beri -integrated-as -msoft-float --sysroot=" + str(
+            cheri_mips_sysroot)
         base_flags = self.make_args.copy()
         base_flags.env_vars["XCFLAGS"] = base_xcflags + " -mabi=n64"
-        #  $  XCC=${SDK_PATH}/bin/clang XCFLAGS='-cheri-linker -target mips64-unknown-freebsd -mcpu=mips3 -integrated-as -msoft-float' gmake
-        self.run_make(options=base_flags, cwd=self.sourceDir)
-        #  $  XCC=${SDK_PATH}/bin/clang XCFLAGS='-cheri-linker -target mips64-unknown-freebsd -mcpu=mips3 -integrated-as -msoft-float' gmake
+        #  $  XCC=${SDK_PATH}/bin/clang XCFLAGS='-cheri-linker -target mips64-unknown-freebsd -mcpu=mips3
+        #  -integrated-as -msoft-float' gmake
+        self.run_make(options=base_flags, cwd=self.source_dir)
+        #  $  XCC=${SDK_PATH}/bin/clang XCFLAGS='-cheri-linker -target mips64-unknown-freebsd -mcpu=mips3
+        #  -integrated-as -msoft-float' gmake
         llvm_mode_flags = self.make_args.copy()
         llvm_mode_flags.env_vars["XCFLAGS"] = base_xcflags + " -mabi=purecap"
-        self.run_make(options=llvm_mode_flags, cwd=self.sourceDir / "llvm_mode")
+        self.run_make(options=llvm_mode_flags, cwd=self.source_dir / "llvm_mode")
 
     def install(self, **kwargs):
         self.make_args.set(DESTDIR=self.config.cheri_sdk_dir / "afl")
         self.run_make("install", options=self.make_args)
-        self.installFile(self.buildDir / "afl-fuzz",
-                         BuildCHERIBSD.rootfsDir(self, cross_target=CompilationTargets.CHERIBSD_MIPS_HYBRID) / "usr/local/bin/afl-fuzz")
-        self.installFile(self.buildDir / "afl-fuzz",
-                         BuildCHERIBSD.rootfsDir(self, cross_target=CompilationTargets.CHERIBSD_MIPS_NO_CHERI) / "usr/local/bin/afl-fuzz")
+        self.install_file(self.build_dir / "afl-fuzz",
+                          BuildCHERIBSD.get_rootfs_dir(self,
+                                                       cross_target=CompilationTargets.CHERIBSD_MIPS_HYBRID) /
+                          "usr/local/bin/afl-fuzz")
+        self.install_file(self.build_dir / "afl-fuzz",
+                          BuildCHERIBSD.get_rootfs_dir(self,
+                                                       cross_target=CompilationTargets.CHERIBSD_MIPS_NO_CHERI) /
+                          "usr/local/bin/afl-fuzz")
 
     def run_tests(self):
         # sysctl machdep.log_cheri_exceptions=0

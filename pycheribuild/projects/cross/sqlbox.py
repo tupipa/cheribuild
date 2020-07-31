@@ -28,13 +28,13 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
-from .crosscompileproject import (CompilationTargets, CrossCompileAutotoolsProject, DefaultInstallDir, GitRepository,
+from .crosscompileproject import (CrossCompileAutotoolsProject, DefaultInstallDir, FettProjectMixin, GitRepository,
                                   MakeCommandKind)
 
 
 class BuildSQLbox(CrossCompileAutotoolsProject):
     # Just add add the FETT target below for now.
-    doNotAddToTargets = True
+    do_not_add_to_targets = True
     build_in_source_dir = True
 
     repository = GitRepository("https://github.com/kristapsdz/sqlbox.git")
@@ -51,16 +51,14 @@ class BuildSQLbox(CrossCompileAutotoolsProject):
 
     def setup(self):
         super().setup()
-        self.configureArgs.append("PREFIX=" + str(self.installPrefix))
+        self.configure_args.append("PREFIX=" + str(self.install_prefix))
 
-    def needsConfigure(self):
-        return not (self.buildDir / "config.h").exists()
+    def needs_configure(self):
+        return not (self.build_dir / "config.h").exists()
 
 
-class BuildFettSQLbox(BuildSQLbox):
+class BuildFettSQLbox(FettProjectMixin, BuildSQLbox):
     project_name = "fett-sqlbox"
-    path_in_rootfs = "/fett"
-    default_architecture = CompilationTargets.FETT_DEFAULT_ARCHITECTURE
     repository = GitRepository("https://github.com/CTSRD-CHERI/sqlbox.git",
                                default_branch="fett")
 

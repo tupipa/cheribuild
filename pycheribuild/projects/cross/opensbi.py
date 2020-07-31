@@ -30,13 +30,14 @@
 
 from pathlib import Path
 
+from ..build_qemu import BuildQEMU
 from ..project import (BuildType, CheriConfig, ComputedDefaultValue, CPUArchitecture, DefaultInstallDir, GitRepository,
                        MakeCommandKind, Project)
 from ...config.compilation_targets import CompilationTargets
 from ...utils import classproperty, commandline_to_str, OSInfo
 
 
-def opensbi_install_dir(config: CheriConfig, project: "BuildOpenSBI", suffix: str):
+def opensbi_install_dir(config: CheriConfig, project: "Project") -> Path:
     dir_name = project.crosscompile_target.generic_suffix.replace("baremetal-", "")
     return config.cheri_sdk_dir / ("opensbi" + project.build_dir_suffix) / dir_name
 
@@ -50,14 +51,14 @@ class BuildOpenSBI(Project):
         CompilationTargets.BAREMETAL_NEWLIB_RISCV64_HYBRID,
         CompilationTargets.BAREMETAL_NEWLIB_RISCV64,
         # Won't compile yet: CompilationTargets.BAREMETAL_NEWLIB_RISCV64_PURECAP
-    ]
+        ]
     make_kind = MakeCommandKind.GnuMake
     _always_add_suffixed_targets = True
-    _default_install_dir_fn = ComputedDefaultValue(function=lambda c, p: opensbi_install_dir(c, p, ""),
+    _default_install_dir_fn = ComputedDefaultValue(function=opensbi_install_dir,
                                                    as_string="$SDK_ROOT/opensbi/riscv{32,64}{-hybrid,-purecap,}")
 
     @classproperty
-    def needs_sysroot(cls):
+    def needs_sysroot(self):
         return False  # we can build without a sysroot
 
     def __init__(self, config):
@@ -72,8 +73,8 @@ class BuildOpenSBI(Project):
         compflags = " " + commandline_to_str(self.target_info.essential_compiler_and_linker_flags)
         compflags += " -Qunused-arguments"  # -mstrict-align -no-pie
         self.make_args.set(
-            O=self.buildDir,  # output dir
-            I=self.installDir,  # install dir
+            O=self.build_dir,  # output dir
+            I=self.install_dir,  # install dir
             CROSS_COMPILE=str(self.sdk_bindir) + "/",
             CC=str(self.CC) + compflags,
             CXX=str(self.CXX) + compflags,
@@ -88,13 +89,13 @@ class BuildOpenSBI(Project):
             PLATFORM_RISCV_ABI=self.target_info.riscv_softfloat_abi,
             PLATFORM_RISCV_ISA=self.target_info.riscv_arch_string,
             PLATFORM_RISCV_XLEN=64,
-        )
+            )
         if self.config.verbose:
             self.make_args.set(V=True)
 
     @property
     def all_platforms(self):
-        platforms_dir = self.sourceDir / "platform"
+        platforms_dir = self.source_dir / "platform"
         self.info(list(platforms_dir.glob("**/config.mk")))
         all_platforms = []
         for c in platforms_dir.glob("**/config.mk"):
@@ -111,18 +112,25 @@ class BuildOpenSBI(Project):
         for platform in self.all_platforms:
             args = self.make_args.copy()
             args.set(PLATFORM=platform)
-            self.run_make(parallel=False, cwd=self.sourceDir, options=args)
+            self.run_make(parallel=False, cwd=self.source_dir, options=args)
 
     def install(self, **kwargs):
-        self.makedirs(self.installDir)
+        self.makedirs(self.install_dir)
         for platform in self.all_platforms:
             args = self.make_args.copy()
             args.set(PLATFORM=platform)
-            self.runMakeInstall(cwd=self.sourceDir, options=args)
+            self.run_make_install(cwd=self.source_dir, options=args)
+        # Only install BuildBBLNoPayload as the QEMU bios and not the GFE version by checking build_dir_suffix
+        if self.crosscompile_target.is_cheri_hybrid() and not self.build_dir_suffix:
+            # Install into the QEMU firware directory so that `-bios default` works
+            qemu_fw_dir = BuildQEMU.get_install_dir(self, cross_target=CompilationTargets.NATIVE) / "share/qemu/"
+            self.makedirs(qemu_fw_dir)
+            self.run_cmd(self.sdk_bindir / "llvm-objcopy", "-S", "-O", "binary",
+                         self._fw_jump_path(), qemu_fw_dir / "opensbi-riscv64cheri-virt-fw_jump.bin")
 
     def _fw_jump_path(self) -> Path:
         # share/opensbi/lp64/generic/firmware//fw_payload.bin
-        return self.installDir / "share/opensbi/{abi}/generic/firmware/fw_jump.elf".format(
+        return self.install_dir / "share/opensbi/{abi}/generic/firmware/fw_jump.elf".format(
             abi=self.target_info.riscv_softfloat_abi)
 
     @classmethod

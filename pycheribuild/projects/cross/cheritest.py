@@ -34,7 +34,7 @@ from ..sail import BuildSailCheriMips
 
 
 class _BuildCheriMipsTestBase(Project):
-    doNotAddToTargets = True
+    do_not_add_to_targets = True
     target = "cheritest"
     project_name = "cheritest"
     repository = GitRepository("https://github.com/CTSRD-CHERI/cheritest.git")
@@ -47,7 +47,9 @@ class _BuildCheriMipsTestBase(Project):
         super().setup_config_options(**kwargs)
         cls.single_test = cls.add_config_option("single-test", help="Run a single test instead of all of them")
         cls.run_tests_with_build = cls.add_bool_option("run-tests-with-build",
-            help="Run tests as part of the --build step (option is useful for jenkins)", show_help=False, default=True)
+                                                       help="Run tests as part of the --build step (option is useful "
+                                                            "for jenkins)",
+                                                       show_help=False, default=True)
 
     def setup(self):
         super().setup()
@@ -89,7 +91,10 @@ class BuildCheriMipsTestQEMU(_BuildCheriMipsTestBase):
         if self.single_test:
             self.run_make("pytest/qemu/tests/" + str(self.single_test), parallel=False)
         else:
-            self.run_make("pytest_qemu_all")
+            self.run_make("qemu_logs128")
+            self.run_make("pytest_qemu128")
+            self.run_make("qemu_logs_mips")
+            self.run_make("pytest_qemu_mips")
 
 
 class BuildCheriMipsTestBluesim(_BuildCheriMipsTestBase):
@@ -99,7 +104,7 @@ class BuildCheriMipsTestBluesim(_BuildCheriMipsTestBase):
 
     def setup(self):
         super().setup()
-        self.make_args.set(CHERI_CPU_GIT_ROOT=BuildCheriSim.getSourceDir(self))
+        self.make_args.set(CHERI_CPU_GIT_ROOT=BuildCheriSim.get_source_dir(self))
 
     def do_cheritest(self):
         multicore = False
@@ -126,7 +131,7 @@ class BuildCheriMipsTestSail(_BuildCheriMipsTestBase):
 
     def setup(self):
         super().setup()
-        self.make_args.set(SAIL_CHERI_MIPS_DIR=BuildSailCheriMips.getBuildDir(self))
+        self.make_args.set(SAIL_CHERI_MIPS_DIR=BuildSailCheriMips.get_build_dir(self))
 
     def do_cheritest(self):
         if self.single_test:

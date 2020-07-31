@@ -27,7 +27,7 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
-from .crosscompileproject import (CheriConfig, CompilationTargets, CrossCompileAutotoolsProject, DefaultInstallDir,
+from .crosscompileproject import (CheriConfig, CrossCompileAutotoolsProject, DefaultInstallDir, FettProjectMixin,
                                   GitRepository, Linkage)
 from .qt5 import BuildQtWebkit
 
@@ -46,46 +46,44 @@ class BuildSQLite(CrossCompileAutotoolsProject):
     def setup(self):
         super().setup()
         if not self.compiling_for_host():
-            self.configureEnvironment["BUILD_CC"] = self.host_CC
-            # self.configureEnvironment["BUILD_CFLAGS"] = "-integrated-as"
-            self.configureArgs.extend([
+            self.configure_environment["BUILD_CC"] = self.host_CC
+            # self.configure_environment["BUILD_CFLAGS"] = "-integrated-as"
+            self.configure_args.extend([
                 "--disable-amalgamation",  # don't concatenate sources
                 "--disable-load-extension",
                 ])
         # always disable tcl, since it tries to install to /usr on Ubuntu
-        self.configureArgs.append("--disable-tcl")
-        self.configureArgs.append("--disable-amalgamation")
+        self.configure_args.append("--disable-tcl")
+        self.configure_args.append("--disable-amalgamation")
         self.cross_warning_flags.append("-Wno-error=cheri-capability-misuse")
 
         if self.target_info.is_freebsd():
-            self.configureArgs.append("--disable-editline")
+            self.configure_args.append("--disable-editline")
             # not sure if needed:
-            self.configureArgs.append("--disable-readline")
+            self.configure_args.append("--disable-readline")
 
         if self.build_type.should_include_debug_info:
             self.COMMON_FLAGS.append("-g")
         if self.build_type.is_debug:
-            self.configureArgs.append("--enable-debug")
+            self.configure_args.append("--enable-debug")
 
     def compile(self, **kwargs):
         # create the required metadata
-        self.run_cmd(self.sourceDir / "create-fossil-manifest", cwd=self.sourceDir)
+        self.run_cmd(self.source_dir / "create-fossil-manifest", cwd=self.source_dir)
         super().compile()
 
     def install(self, **kwargs):
         super().install()
 
-    def needsConfigure(self):
-        return not (self.buildDir / "Makefile").exists()
+    def needs_configure(self):
+        return not (self.build_dir / "Makefile").exists()
 
 
-class BuildFettSQLite(BuildSQLite):
+class BuildFettSQLite(FettProjectMixin, BuildSQLite):
     project_name = "fett-sqlite"
-    path_in_rootfs = "/fett"
-    default_architecture = CompilationTargets.FETT_DEFAULT_ARCHITECTURE
     repository = GitRepository("https://github.com/CTSRD-CHERI/sqlite.git", default_branch="fett")
     cross_install_dir = DefaultInstallDir.ROOTFS
 
     def __init__(self, config: CheriConfig):
         super().__init__(config)
-        self.configureArgs.extend(["--enable-fts3"])
+        self.configure_args.extend(["--enable-fts3"])

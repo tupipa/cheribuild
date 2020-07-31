@@ -39,7 +39,7 @@ class BuildEffectiveSan(BuildLLVMMonoRepoBase):
     project_name = "EffectiveSan"
     repository = GitRepository("https://github.com/GJDuck/EffectiveSan")
     _default_install_dir_fn = ComputedDefaultValue(
-        function=lambda config, project: config.outputRoot / "effectivesan",
+        function=lambda config, project: config.output_root / "effectivesan",
         as_string="$INSTALL_ROOT/effectivesan")
     skip_cheri_symlinks = True
     llvm_subdir = "llvm-4.0.1.src"
@@ -59,6 +59,5 @@ class BuildEffectiveSan(BuildLLVMMonoRepoBase):
             filename = "effectivesan-{}.tar.xz".format(version)
             url = "https://github.com/GJDuck/EffectiveSan/releases/download/v{}/{}".format(version, filename)
             self.run_cmd("wget", url, cwd=td)
-            self.clean_directory(self.installDir, ensure_dir_exists=True)
-            self.run_cmd("tar", "xvfJ", filename, "-C", self.installDir, "--strip-components=1", cwd=td)
-
+            self.clean_directory(self.install_dir, ensure_dir_exists=True)
+            self.run_cmd("tar", "xvfJ", filename, "-C", self.install_dir, "--strip-components=1", cwd=td)

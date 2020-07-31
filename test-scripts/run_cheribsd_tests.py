@@ -46,13 +46,13 @@ from run_tests_common import boot_cheribsd, run_tests_main, pexpect, CrossCompil
 
 def run_cheritest(qemu: boot_cheribsd.CheriBSDInstance, binary_name, args: argparse.Namespace) -> bool:
     try:
-        qemu.checked_run("rm -f /test-results/{}.xml".format(binary_name))
+        qemu.checked_run("rm -f /tmp/{}.xml".format(binary_name))
         # Run it once with textual output (for debugging)
         # qemu.run("/bin/{} -a".format(binary_name, binary_name),
         #     ignore_cheri_trap=True, cheri_trap_fatal=False, timeout=5 * 60)
         # Generate JUnit XML:
-        qemu.run("/bin/{} -a -x > /test-results/{}.xml".format(binary_name, binary_name),
-            ignore_cheri_trap=True, cheri_trap_fatal=False, timeout=5 * 60)
+        qemu.run("/bin/{} -a -x > /tmp/{}.xml".format(binary_name, binary_name),
+                 ignore_cheri_trap=True, cheri_trap_fatal=False, timeout=5 * 60)
         qemu.sendline("echo EXITCODE=$?")
         qemu.expect(["EXITCODE=(\\d+)\r"], timeout=5, pretend_result=0)
         if boot_cheribsd.PRETEND:
@@ -61,7 +61,13 @@ def run_cheritest(qemu: boot_cheribsd.CheriBSDInstance, binary_name, args: argpa
             print(qemu.match.groups())
             exit_code = int(qemu.match.group(1))
             qemu.expect_prompt()
-        qemu.run("fsync /test-results/{}.xml".format(binary_name))
+        if qemu.smb_failed:
+            boot_cheribsd.info("SMB mount has failed, performing normal scp")
+            host_path = Path(args.test_output_dir, binary_name + ".xml")
+            qemu.scp_from_guest("/tmp/{}.xml".format(binary_name), host_path)
+        else:
+            qemu.checked_run("mv -f /tmp/{}.xml /test-results/{}.xml".format(binary_name, binary_name))
+            qemu.run("fsync /test-results/{}.xml".format(binary_name))
         return exit_code == 0
     except boot_cheribsd.CheriBSDCommandTimeout as e:
         boot_cheribsd.failure("Timeout running cheritest: " + str(e), exit=False)
@@ -99,9 +105,8 @@ def run_cheribsd_test(qemu: boot_cheribsd.CheriBSDInstance, args: argparse.Names
 
     # Run the various cheritest binaries
     if args.run_cheritest:
-        # Disable trap dumps while running cheritest (only available on MIPS):
-        if qemu.xtarget.is_mips(include_purecap=True):
-            qemu.checked_run("sysctl machdep.log_cheri_exceptions=0")
+        # Disable trap dumps while running cheritest (handle both old and new sysctl names until dev is merged):
+        qemu.run("sysctl machdep.log_user_cheri_exceptions=0 || sysctl machdep.log_cheri_exceptions=0")
         # The minimal disk image only has the statically linked variants:
         test_binaries = ["cheritest", "cheriabitest"]
         if not args.minimal_image:
@@ -111,8 +116,7 @@ def run_cheribsd_test(qemu: boot_cheribsd.CheriBSDInstance, args: argparse.Names
             if not run_cheritest(qemu, test, args):
                 tests_successful = False
                 boot_cheribsd.failure("At least one test failure in", test, exit=False)
-        if qemu.xtarget.is_mips(include_purecap=True):
-            qemu.checked_run("sysctl machdep.log_cheri_exceptions=1")
+        qemu.run("sysctl machdep.log_user_cheri_exceptions=1 || sysctl machdep.log_cheri_exceptions=1")
 
     # Run kyua tests
     try:
@@ -128,13 +132,18 @@ def run_cheribsd_test(qemu: boot_cheribsd.CheriBSDInstance, args: argparse.Names
             qemu.run("kyua test --results-file=/tmp/results.db -k {}".format(shlex.quote(tests_file)),
                      ignore_cheri_trap=True, cheri_trap_fatal=False, timeout=24 * 60 * 60)
             if i == 0:
-                results_db = Path("/test-results/test-results.db")
+                result_name = "test-results.db"
             else:
-                results_db = Path("/test-results/test-results-{}.db".format(i))
+                result_name = "test-results-{}.db".format(i)
+            results_db = Path("/test-results/{}".format(result_name))
             results_xml = results_db.with_suffix(".xml")
             assert shlex.quote(str(results_db)) == str(results_db), "Should not contain any special chars"
-            qemu.checked_run("cp -v /tmp/results.db {}".format(results_db))
-            qemu.checked_run("fsync " + str(results_db))
+            if qemu.smb_failed:
+                boot_cheribsd.info("SMB mount has failed, performing normal scp")
+                qemu.scp_from_guest("/tmp/results.db", Path(args.test_output_dir, results_db.name))
+            else:
+                qemu.checked_run("cp -v /tmp/results.db {}".format(results_db))
+                qemu.checked_run("fsync " + str(results_db))
             boot_cheribsd.success("Running tests for ", tests_file, " took: ", datetime.datetime.now() - test_start)
 
             # run: kyua report-junit --results-file=test-results.db | vis -os > ${CPU}-${TEST_NAME}-test-results.xml
@@ -148,8 +157,12 @@ def run_cheribsd_test(qemu: boot_cheribsd.CheriBSDInstance, args: argparse.Names
                 xml_conversion_start = datetime.datetime.now()
                 qemu.checked_run("kyua report-junit --results-file=/tmp/results.db > /tmp/results.xml",
                                  timeout=200 * 60)
-                qemu.checked_run("cp -v /tmp/results.xml {}".format(results_xml))
-                qemu.checked_run("fsync " + str(results_xml))
+                if qemu.smb_failed:
+                    boot_cheribsd.info("SMB mount has failed, performing normal scp")
+                    qemu.scp_from_guest("/tmp/results.xml", Path(args.test_output_dir, results_xml.name))
+                else:
+                    qemu.checked_run("cp -v /tmp/results.xml {}".format(results_xml))
+                    qemu.checked_run("fsync " + str(results_xml))
                 boot_cheribsd.success("Creating JUnit XML ", results_xml, " took: ",
                                       datetime.datetime.now() - xml_conversion_start)
     except boot_cheribsd.CheriBSDCommandTimeout as e:
@@ -203,6 +216,9 @@ def run_cheribsd_test(qemu: boot_cheribsd.CheriBSDInstance, args: argparse.Names
         boot_cheribsd.failure("QEMU didn't exit after shutdown!")
         return False
     boot_cheribsd.success("Poweroff took: ", datetime.datetime.now() - poweroff_start)
+    if tests_successful and qemu.smb_failed:
+        boot_cheribsd.info("Tests succeeded, but SMB mount failed -> marking tests as failed.")
+        tests_successful = False
     return tests_successful
 
 
@@ -252,7 +268,7 @@ def add_args(parser: argparse.ArgumentParser):
     parser.add_argument("--run-cheritest", dest="run_cheritest", action="store_true", default=None,
                         help="Run cheritest and cheriabitest")
     parser.add_argument("--minimal-image", action="store_true",
-        help="Set this if tests are being run on the minimal disk image rather than the full one")
+                        help="Set this if tests are being run on the minimal disk image rather than the full one")
     parser.add_argument("--no-run-cheritest", dest="run_cheritest", action="store_false",
                         help="Do not run cheritest and cheriabitest")
 

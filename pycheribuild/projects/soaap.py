@@ -31,15 +31,15 @@ from .llvm import BuildLLVMSplitRepoBase
 from .project import CMakeProject, GitRepository
 from ..config.loader import ComputedDefaultValue
 
-install_to_soaap_dir = ComputedDefaultValue(function=lambda config, project: config.outputRoot / "soaap",
+install_to_soaap_dir = ComputedDefaultValue(function=lambda config, project: config.output_root / "soaap",
                                             as_string="$INSTALL_ROOT/soaap")
 
 
 class BuildSoaapLLVM(BuildLLVMSplitRepoBase):
     target = "soaap-llvm"
     project_name = "soaap-llvm"
-    githubBaseUrl = "https://github.com/CTSRD-SOAAP/"
-    repository = GitRepository(githubBaseUrl + "llvm.git")
+    github_base_url = "https://github.com/CTSRD-SOAAP/"
+    repository = GitRepository(github_base_url + "llvm.git")
     no_default_sysroot = True
     skip_misc_llvm_tools = False
     skip_static_analyzer = False
@@ -49,7 +49,7 @@ class BuildSoaapLLVM(BuildLLVMSplitRepoBase):
     @classmethod
     def setup_config_options(cls, **kwargs):
         cls.included_projects = ["llvm", "clang"]
-        super().setup_config_options(includeLldbRevision=False, includeLldRevision=False, useDefaultSysroot=False)
+        super().setup_config_options(include_lldb_revision=False, include_lld_revision=False, **kwargs)
 
 
 class BuildSoaap(CMakeProject):
@@ -59,9 +59,8 @@ class BuildSoaap(CMakeProject):
 
     def configure(self, **kwargs):
         soaap_llvm = BuildSoaapLLVM.get_instance(self)
-        print(soaap_llvm.configureArgs)
-        build_shared_libs = any(x == "-DBUILD_SHARED_LIBS=ON" for x in soaap_llvm.configureArgs)
-        self.add_cmake_options(LLVM_DIR=soaap_llvm.buildDir / "share/llvm/cmake")
+        print(soaap_llvm.configure_args)
+        build_shared_libs = any(x == "-DBUILD_SHARED_LIBS=ON" for x in soaap_llvm.configure_args)
+        self.add_cmake_options(LLVM_DIR=soaap_llvm.build_dir / "share/llvm/cmake")
         self.add_cmake_options(BUILD_SHARED_LIBS=build_shared_libs)
         super().configure(**kwargs)
-

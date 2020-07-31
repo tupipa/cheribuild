@@ -28,20 +28,23 @@
 # SUCH DAMAGE.
 #
 import os
+import platform
+import subprocess
 import sys
 
 from .crosscompileproject import (CheriConfig, CompilationTargets, CrossCompileCMakeProject, DefaultInstallDir,
                                   GitRepository)
 from ..build_qemu import BuildQEMU
-from ..llvm import BuildCheriLLVM
-from ..project import ReuseOtherProjectDefaultTargetRepository
+from ..llvm import BuildCheriLLVM, BuildUpstreamLLVM
+from ..project import CMakeProject, ReuseOtherProjectDefaultTargetRepository
 from ..run_qemu import LaunchCheriBSD
-from ...utils import commandline_to_str, OSInfo, runCmd, setEnv, warningMessage
+from ...config.chericonfig import BuildType
+from ...utils import commandline_to_str, OSInfo, set_env
 
 
 # A base class to set the default installation directory
 class _CxxRuntimeCMakeProject(CrossCompileCMakeProject):
-    doNotAddToTargets = True
+    do_not_add_to_targets = True
     cross_install_dir = DefaultInstallDir.SYSROOT_FOR_BAREMETAL_ROOTFS_OTHERWISE
     native_install_dir = DefaultInstallDir.IN_BUILD_DIRECTORY
 
@@ -57,12 +60,7 @@ class BuildLibunwind(_CxxRuntimeCMakeProject):
 
     def __init__(self, config: CheriConfig):
         super().__init__(config)
-        self.add_cmake_options(LIBUNWIND_HAS_DL_LIB=False)  # Adding -ldl won't work: no libdl in /usr/libcheri
-        self.lit_path = BuildCheriLLVM.getBuildDir(self, cross_target=CompilationTargets.NATIVE) / "bin/llvm-lit"
-        self.add_cmake_options(
-            LLVM_PATH=BuildCheriLLVM.getSourceDir(self, cross_target=CompilationTargets.NATIVE) / "llvm",
-            LLVM_EXTERNAL_LIT=self.lit_path,
-            )
+        # self.add_cmake_options(LIBUNWIND_HAS_DL_LIB=False)  # Adding -ldl won't work: no libdl in /usr/libcheri
 
     def configure(self, **kwargs):
         # TODO: should share some code with libcxx
@@ -71,21 +69,24 @@ class BuildLibunwind(_CxxRuntimeCMakeProject):
         test_linker_flags = commandline_to_str(self.default_ldflags)
 
         cxx_instance = BuildLibCXX.get_instance(self)
-
-        self.add_cmake_options(LIBUNWIND_LIBCXX_PATH=cxx_instance.sourceDir,
+        if self.compiling_for_mips(include_purecap=True) and self.target_info.is_freebsd():
+            # libcxxrt requires __floatundidf/__fixunsdfdi
+            test_linker_flags += " -lcompiler_rt"
+        self.add_cmake_options(LIBUNWIND_LIBCXX_PATH=cxx_instance.source_dir,
                                # Should use libc++ from sysroot
-                               # LIBUNWIND_LIBCXX_LIBRARY_PATH=BuildLibCXX.getBuildDir(self) / "lib",
+                               # LIBUNWIND_LIBCXX_LIBRARY_PATH=BuildLibCXX.get_build_dir(self) / "lib",
                                LIBUNWIND_LIBCXX_LIBRARY_PATH="",
                                LIBUNWIND_TEST_LINKER_FLAGS=test_linker_flags,
                                LIBUNWIND_TEST_COMPILER_FLAGS=test_compiler_flags,
                                # For the test binaries we link libcxxrt statically
-                               LIBUNWIND_TEST_CXX_ABI_LIB=BuildLibCXXRT.getBuildDir(self) / "lib/libcxxrt.a",
+                               LIBUNWIND_TEST_CXX_ABI_LIB_PATH=BuildLibCXXRT.get_build_dir(self) / "lib/libcxxrt.a",
                                LIBUNWIND_ENABLE_ASSERTIONS=True,
                                )
-        # Lit multiprocessing seems broken with python 2.7 on FreeBSD (and python 3 seems faster at least for libunwind/libcxx)
+        # Lit multiprocessing seems broken with python 2.7 on FreeBSD (and python 3 seems faster at least for
+        # libunwind/libcxx)
         self.add_cmake_options(PYTHON_EXECUTABLE=sys.executable)
         if self.compiling_for_host():
-            if OSInfo.IS_MAC or OSInfo.isUbuntu():
+            if OSInfo.IS_MAC or OSInfo.is_ubuntu():
                 # Can't link libc++abi on MacOS and libsupc++ statically on Ubuntu
                 self.add_cmake_options(LIBUNWIND_TEST_ENABLE_EXCEPTIONS=False)
                 # Static linking is broken on Ubuntu 16.04
@@ -93,8 +94,10 @@ class BuildLibunwind(_CxxRuntimeCMakeProject):
         else:
             self.add_cmake_options(LIBCXX_ENABLE_SHARED=False,
                                    LIBUNWIND_ENABLE_SHARED=True)
-            collect_test_binaries = self.buildDir / "test-output"
-            executor = "CollectBinariesExecutor(\\\"{path}\\\", self)".format(path=collect_test_binaries)
+            # collect_test_binaries = self.build_dir / "test-output"
+            # executor = commandline_to_str([self.source_dir / "../libcxx/utils/copy_files.py",
+            #                                "--output-dir", collect_test_binaries])
+            executor = commandline_to_str([self.source_dir / "../libcxx/utils/compile_only.py"])
             self.add_cmake_options(
                 LLVM_LIT_ARGS="--xunit-xml-output " + os.getenv("WORKSPACE", ".") +
                               "/libunwind-test-results.xml --max-time 3600 --timeout 120 -s -vv -j1",
@@ -104,7 +107,7 @@ class BuildLibunwind(_CxxRuntimeCMakeProject):
             # add the config options required for running tests:
             self.add_cmake_options(LIBUNWIND_EXECUTOR=executor, LIBUNWIND_TARGET_INFO=target_info,
                                    LIBUNWIND_CXX_ABI_LIBNAME="libcxxrt")
-            version_script = self.sourceDir / "Version.map.FreeBSD"
+            version_script = self.source_dir / "Version.map.FreeBSD"
             if not version_script.exists():
                 self.fatal("libunwind version script is missing, please update llvm-project!")
             self.add_cmake_options(LIBUNWIND_USE_VERSION_SCRIPT=version_script)
@@ -118,13 +121,14 @@ class BuildLibunwind(_CxxRuntimeCMakeProject):
             self.info("Baremetal tests not implemented")
             return
         if self.compiling_for_host():
-            runCmd("ninja", "check-unwind", "-v", cwd=self.buildDir)
+            self.run_make("check-unwind", cwd=self.build_dir)
         else:
             # Check that the four tests compile and then attempt to run them:
-            # TODO: run the three combinations here too?
-            runCmd("ninja", "check-unwind", "-v", cwd=self.buildDir)
+            self.run_make("check-unwind", cwd=self.build_dir)
             self.target_info.run_cheribsd_test_script("run_libunwind_tests.py", "--lit-debug-output",
-                                          "--llvm-lit-path", self.lit_path, mount_sysroot=True)
+                                                      "--ssh-executor-script",
+                                                      self.source_dir / "../libcxx/utils/ssh.py",
+                                                      mount_sysroot=True)
 
 
 class BuildLibCXXRT(_CxxRuntimeCMakeProject):
@@ -139,12 +143,12 @@ class BuildLibCXXRT(_CxxRuntimeCMakeProject):
     def __init__(self, config: CheriConfig):
         super().__init__(config)
         if not self.target_info.is_baremetal():
-            self.add_cmake_options(LIBUNWIND_PATH=BuildLibunwind.getInstallDir(self) / "lib",
+            self.add_cmake_options(LIBUNWIND_PATH=BuildLibunwind.get_install_dir(self) / "lib",
                                    CMAKE_INSTALL_RPATH_USE_LINK_PATH=True)
         if self.compiling_for_host():
             assert not self.target_info.is_baremetal()
             self.add_cmake_options(BUILD_TESTS=True, TEST_LIBUNWIND=True)
-            if OSInfo.isUbuntu():
+            if OSInfo.is_ubuntu():
                 self.add_cmake_options(COMPARE_TEST_OUTPUT_TO_SYSTEM_OUTPUT=False)
                 # Seems to be needed for at least jenkins (it says relink with -pie)
                 self.add_cmake_options(CMAKE_POSITION_INDEPENDENT_CODE=True)
@@ -161,23 +165,28 @@ class BuildLibCXXRT(_CxxRuntimeCMakeProject):
                 self.add_cmake_options(BUILD_TESTS=True, TEST_LIBUNWIND=True)
 
     def install(self, **kwargs):
-        self.installFile(self.buildDir / "lib/libcxxrt.a", self.installDir / "lib" / "libcxxrt.a", force=True)
-        self.installFile(self.buildDir / "lib/libcxxrt.so", self.installDir / "lib" / "libcxxrt.soa", force=True)
-        # self.installFile(self.buildDir / "lib/libcxxrt.a", libdir / "libcxxrt.so", force=True)
-        # self.installFile(self.buildDir / "lib/libcxxrt.so", self.installDir / "usr/libcheri/libcxxrt.so", force=True)
+        self.install_file(self.build_dir / "lib/libcxxrt.a", self.install_dir / "lib" / "libcxxrt.a", force=True)
+        self.install_file(self.build_dir / "lib/libcxxrt.so", self.install_dir / "lib" / "libcxxrt.soa", force=True)
+        # self.install_file(self.build_dir / "lib/libcxxrt.a", libdir / "libcxxrt.so", force=True)
+        # self.install_file(self.build_dir / "lib/libcxxrt.so", self.install_dir / "usr/libcheri/libcxxrt.so",
+        # force=True)
 
     def run_tests(self):
         if self.target_info.is_baremetal():
             self.info("Baremetal tests not implemented")
             return
         # TODO: this won't work on macOS
-        with setEnv(LD_LIBRARY_PATH=self.buildDir / "lib"):
+        with set_env(LD_LIBRARY_PATH=self.build_dir / "lib"):
             if self.compiling_for_host():
-                runCmd("ctest", ".", "-VV", cwd=self.buildDir)
+                self.run_cmd("ctest", ".", "-VV", cwd=self.build_dir)
             else:
                 self.target_info.run_cheribsd_test_script("run_libcxxrt_tests.py",
-                                              "--libunwind-build-dir", BuildLibunwind.getBuildDir(self),
-                                              mount_builddir=True, mount_sysroot=True)
+                                                          "--libunwind-build-dir", BuildLibunwind.get_build_dir(self),
+                                                          mount_builddir=True, mount_sysroot=True)
+
+
+def _default_ssh_port(c, p):
+    return LaunchCheriBSD.get_instance(p, c, cross_target=CompilationTargets.CHERIBSD_MIPS_HYBRID).ssh_forwarding_port
 
 
 class BuildLibCXX(_CxxRuntimeCMakeProject):
@@ -190,26 +199,28 @@ class BuildLibCXX(_CxxRuntimeCMakeProject):
     def setup_config_options(cls, **kwargs):
         super().setup_config_options(**kwargs)
         cls.only_compile_tests = cls.add_bool_option("only-compile-tests",
-                                                   help="Don't attempt to run tests, only compile them")
+                                                     help="Don't attempt to run tests, only compile them")
         cls.exceptions = cls.add_bool_option("exceptions", default=True, help="Build with support for C++ exceptions")
         cls.collect_test_binaries = cls.add_path_option("collect-test-binaries", metavar="TEST_PATH",
-                                                      help="Instead of running tests copy them to $TEST_PATH")
-        cls.nfs_mounted_path = cls.add_path_option("nfs-mounted-path", metavar="PATH", help="Use a PATH as a directory"
-                                                                                          "that is NFS mounted inside QEMU instead of using scp to copy "
-                                                                                          "individual tests")
+                                                        help="Instead of running tests copy them to $TEST_PATH")
+        cls.nfs_mounted_path = cls.add_path_option("nfs-mounted-path", metavar="PATH",
+                                                   help="Use a PATH as a directorythat is NFS mounted inside QEMU "
+                                                        "instead of using scp to copy individual tests")
         cls.nfs_path_in_qemu = cls.add_path_option("nfs-mounted-path-in-qemu", metavar="PATH",
-                                                 help="The path used inside QEMU to refer to nfs-mounted-path")
+                                                   help="The path used inside QEMU to refer to nfs-mounted-path")
         cls.qemu_host = cls.add_config_option("ssh-host", help="The QEMU SSH hostname to connect to for running tests",
-                                            default=lambda c, p: "localhost")
-        cls.qemu_port = cls.add_config_option("ssh-port",
-            help="The QEMU SSH port to connect to for running tests", _allow_unknown_targets=True,
-            default=lambda c, p: LaunchCheriBSD.get_instance(p, c, cross_target=CompilationTargets.CHERIBSD_MIPS_HYBRID).sshForwardingPort,
-            only_add_for_targets=[CompilationTargets.CHERIBSD_MIPS_PURECAP, CompilationTargets.CHERIBSD_MIPS_HYBRID, CompilationTargets.CHERIBSD_MIPS_NO_CHERI])
+                                              default=lambda c, p: "localhost")
+        cls.qemu_port = cls.add_config_option("ssh-port", help="The QEMU SSH port to connect to for running tests",
+                                              _allow_unknown_targets=True, default=_default_ssh_port,
+                                              only_add_for_targets=[CompilationTargets.CHERIBSD_MIPS_PURECAP,
+                                                                    CompilationTargets.CHERIBSD_MIPS_HYBRID,
+                                                                    CompilationTargets.CHERIBSD_MIPS_NO_CHERI])
         cls.qemu_user = cls.add_config_option("ssh-user", default="root", help="The CheriBSD used for running tests")
 
-        cls.test_jobs = cls.add_config_option("parallel-test-jobs", help="Number of QEMU instances spawned to run tests "
-                                                                       "(default: number of build jobs (-j flag) / 2)",
-                                            default=lambda c, p: c.makeJobs / 2, kind=int)
+        cls.test_jobs = cls.add_config_option("parallel-test-jobs",
+                                              help="Number of QEMU instances spawned to run tests "
+                                                   "(default: number of build jobs (-j flag) / 2)",
+                                              default=lambda c, p: c.make_jobs / 2, kind=int)
 
     def __init__(self, config: CheriConfig):
         super().__init__(config)
@@ -221,35 +232,34 @@ class BuildLibCXX(_CxxRuntimeCMakeProject):
         super().setup()
         if self.compiling_for_host():
             self.add_cmake_options(LIBCXX_ENABLE_SHARED=True, LIBCXX_ENABLE_STATIC_ABI_LIBRARY=False)
-            if OSInfo.isUbuntu():
+            if OSInfo.is_ubuntu():
                 # Ubuntu packagers think that static linking should not be possible....
                 self.add_cmake_options(LIBCXX_ENABLE_STATIC=False)
         else:
-            self.addCrossFlags()
+            self.add_cross_flags()
         # add the common test options
         self.add_cmake_options(
             CMAKE_INSTALL_RPATH_USE_LINK_PATH=True,  # Fix finding libunwind.so
             LIBCXX_INCLUDE_TESTS=True,
-            LLVM_PATH=BuildCheriLLVM.getSourceDir(self, cross_target=CompilationTargets.NATIVE) / "llvm",
-            LLVM_EXTERNAL_LIT=BuildCheriLLVM.getBuildDir(self, cross_target=CompilationTargets.NATIVE) / "bin/llvm-lit",
             LIBCXXABI_USE_LLVM_UNWINDER=False,  # we have a fake libunwind in libcxxrt
             LLVM_LIT_ARGS="--xunit-xml-output " + os.getenv("WORKSPACE", ".") +
                           "/libcxx-test-results.xml --max-time 3600 --timeout 120 -s -vv" + self.libcxx_lit_jobs
-        )
-        # Lit multiprocessing seems broken with python 2.7 on FreeBSD (and python 3 seems faster at least for libunwind/libcxx)
+            )
+        # Lit multiprocessing seems broken with python 2.7 on FreeBSD (and python 3 seems faster at least for
+        # libunwind/libcxx)
         self.add_cmake_options(PYTHON_EXECUTABLE=sys.executable)
         # select libcxxrt as the runtime library (except on macos where this doesn't seem to work very well)
         if not (self.compiling_for_host() and OSInfo.IS_MAC):
             self.add_cmake_options(
                 LIBCXX_CXX_ABI="libcxxrt",
                 LIBCXX_CXX_ABI_LIBNAME="libcxxrt",
-                LIBCXX_CXX_ABI_INCLUDE_PATHS=BuildLibCXXRT.getSourceDir(self) / "src",
-                LIBCXX_CXX_ABI_LIBRARY_PATH=BuildLibCXXRT.getBuildDir(self) / "lib")
+                LIBCXX_CXX_ABI_INCLUDE_PATHS=BuildLibCXXRT.get_source_dir(self) / "src",
+                LIBCXX_CXX_ABI_LIBRARY_PATH=BuildLibCXXRT.get_build_dir(self) / "lib")
             if not self.target_info.is_baremetal():
                 # use llvm libunwind when testing
                 self.add_cmake_options(LIBCXX_STATIC_CXX_ABI_LIBRARY_NEEDS_UNWIND_LIBRARY=True,
                                        LIBCXX_CXX_ABI_UNWIND_LIBRARY="unwind",
-                                       LIBCXX_CXX_ABI_UNWIND_LIBRARY_PATH=BuildLibunwind.getBuildDir(self) / "lib")
+                                       LIBCXX_CXX_ABI_UNWIND_LIBRARY_PATH=BuildLibunwind.get_build_dir(self) / "lib")
 
         if not self.exceptions or self.target_info.is_baremetal():
             self.add_cmake_options(LIBCXX_ENABLE_EXCEPTIONS=False, LIBCXX_ENABLE_RTTI=False)
@@ -259,7 +269,7 @@ class BuildLibCXX(_CxxRuntimeCMakeProject):
         self.common_warning_flags.append("-Wno-ignored-attributes")
         print(self.common_warning_flags)
 
-    def addCrossFlags(self):
+    def add_cross_flags(self):
         # TODO: do I even need the toolchain file to cross compile?
 
         self.add_cmake_options(LIBCXX_TARGET_TRIPLE=self.target_info.target_triple,
@@ -284,13 +294,12 @@ class BuildLibCXX(_CxxRuntimeCMakeProject):
                 LIBCXX_ENABLE_GLOBAL_FILESYSTEM_NAMESPACE=False,  # no filesystem on baremetal QEMU
                 # TODO: we should be able to implement this in QEMU
                 LIBCXX_ENABLE_MONOTONIC_CLOCK=False,  # no monotonic clock for now
-            )
+                )
             test_linker_flags += " -Wl,-T,qemu-malta.ld"
-
 
         self.add_cmake_options(LIBCXX_TEST_COMPILER_FLAGS=test_compile_flags,
                                LIBCXX_TEST_LINKER_FLAGS=test_linker_flags,
-                               LIBCXX_SLOW_TEST_HOST=True) # some tests need more tolerance/less iterations on QEMU
+                               LIBCXX_SLOW_TEST_HOST=True)  # some tests need more tolerance/less iterations on QEMU
 
         self.add_cmake_options(
             LIBCXX_ENABLE_SHARED=False,  # not yet
@@ -305,31 +314,33 @@ class BuildLibCXX(_CxxRuntimeCMakeProject):
             LIBCXX_INCLUDE_DOCS=False,
             # When cross compiling we link the ABI library statically (except baremetal since that doens;t have it yet)
             LIBCXX_ENABLE_STATIC_ABI_LIBRARY=not self.target_info.is_baremetal(),
-        )
+            )
         if self.only_compile_tests:
-            executor = "CompileOnlyExecutor()"
+            executor = commandline_to_str([self.source_dir / "utils/compile_only.py"])
         elif self.collect_test_binaries:
-            executor = "CollectBinariesExecutor(\\\"{path}\\\", self)".format(path=self.collect_test_binaries)
+            executor = commandline_to_str([self.source_dir / "utils/copy_files.py",
+                                           "--output-dir", self.collect_test_binaries])
         elif self.target_info.is_baremetal():
             run_qemu_script = self.target_info.sdk_root_dir / "baremetal/mips64-qemu-elf/bin/run_with_qemu.py"
             if not run_qemu_script.exists():
-                warningMessage("run_with_qemu.py is needed to run libcxx baremetal tests but could not find it:",
-                               run_qemu_script, "does not exist")
+                self.warning("run_with_qemu.py is needed to run libcxx baremetal tests but could not find it:",
+                             run_qemu_script, "does not exist")
             prefix = [str(run_qemu_script), "--qemu", str(BuildQEMU.qemu_cheri_binary(self)), "--timeout", "20"]
             prefix_list = '[\\\"' + "\\\", \\\"".join(prefix) + "\\\"]"
             executor = "PrefixExecutor(" + prefix_list + ", LocalExecutor())"
-            print(executor)
         elif self.nfs_mounted_path:
-            self.libcxx_lit_jobs = " -j1" # We can only run one job here since we are using scp
-            executor = "SSHExecutorWithNFSMount(\\\"{host}\\\", nfs_dir=\\\"{nfs_dir}\\\", path_in_target=\\\"{nfs_in_target}\\\"," \
-                       " config=self, username=\\\"{user}\\\", port={port})".format(host=self.qemu_host, user=self.qemu_user,
-                                                                                    port=self.qemu_port,
-                                                                                    nfs_dir=self.nfs_mounted_path,
-                                                                                    nfs_in_target=self.nfs_path_in_qemu)
+            self.libcxx_lit_jobs = " -j1"  # We can only run one job here since we are using scp
+            self.fatal("nfs_mounted_path not portend to new libc++ test infrastructure yet")
+            executor = "SSHExecutorWithNFSMount(\\\"{host}\\\", nfs_dir=\\\"{nfs_dir}\\\"," \
+                       "path_in_target=\\\"{nfs_in_target}\\\", config=self, username=\\\"{user}\\\"," \
+                       " port={port})".format(host=self.qemu_host, user=self.qemu_user, port=self.qemu_port,
+                                              nfs_dir=self.nfs_mounted_path, nfs_in_target=self.nfs_path_in_qemu)
         else:
-            self.libcxx_lit_jobs = " -j1" # We can only run one job here since we are using scp
-            executor = "SSHExecutor('{host}', username='{user}', port={port}, config=self)".format(
-                host=self.qemu_host, user=self.qemu_user, port=self.qemu_port)
+            self.libcxx_lit_jobs = " -j1"  # We can only run one job here since we are using scp
+            executor = commandline_to_str([self.source_dir / "utils/ssh.py",
+                                           "--host", "{user}@{host}:{port}".format(host=self.qemu_host,
+                                                                                   user=self.qemu_user,
+                                                                                   port=self.qemu_port)])
         if self.target_info.is_baremetal():
             target_info = "libcxx.test.target_info.BaremetalNewlibTI"
         else:
@@ -342,9 +353,91 @@ class BuildLibCXX(_CxxRuntimeCMakeProject):
             self.info("Baremetal tests not implemented")
             return
         if self.compiling_for_host():
-            runCmd("ninja", "check-cxx", "-v", cwd=self.buildDir)
+            self.run_make("check-cxx", cwd=self.build_dir)
         else:
-            #  "--lit-debug-output"?
+            # long running test -> speed up by using a kernel without invariants
             self.target_info.run_cheribsd_test_script("run_libcxx_tests.py", "--parallel-jobs", self.test_jobs,
-                                          # long running test -> speed up by using a kernel without invariants
-                                          use_benchmark_kernel_by_default=True)
+                                                      "--ssh-executor-script", self.source_dir / "utils/ssh.py",
+                                                      use_benchmark_kernel_by_default=True)
+
+
+class BuildLlvmLibs(CMakeProject):
+    target = "llvm-libs"
+    project_name = "llvm-libs"
+    repository = ReuseOtherProjectDefaultTargetRepository(BuildCheriLLVM, subdirectory="llvm")
+    llvm_project = BuildCheriLLVM
+    # TODO: support cross-compilation
+    supported_architectures = [CompilationTargets.NATIVE]
+    native_install_dir = DefaultInstallDir.IN_BUILD_DIRECTORY
+    dependencies = ["llvm"]
+    default_build_type = BuildType.DEBUG
+
+    @property
+    def custom_c_preprocessor(self):
+        return self.llvm_project.get_install_dir(self, cross_target=CompilationTargets.NATIVE) / "bin/clang-cpp"
+
+    @property
+    def custom_c_compiler(self):
+        return self.llvm_project.get_install_dir(self, cross_target=CompilationTargets.NATIVE) / "bin/clang"
+
+    @property
+    def custom_cxx_compiler(self):
+        return self.llvm_project.get_install_dir(self, cross_target=CompilationTargets.NATIVE) / "bin/clang++"
+
+    def setup(self):
+        super().setup()
+        lit_args = "--xunit-xml-output " + os.getenv("WORKSPACE", ".") + \
+                   "/test-results.xml --max-time 3600 --timeout 120 -s -vv"
+        self.add_cmake_options(LLVM_ENABLE_PROJECTS="libunwind;libcxxabi;libcxx",
+                               # ;compiler-rt
+                               LIBCXX_ENABLE_SHARED=True,
+                               LIBCXX_ENABLE_STATIC=True,
+                               LIBCXX_CXX_ABI="libcxxabi",
+                               LIBCXX_USE_COMPILER_RT=False,
+                               LIBCXXABI_USE_LLVM_UNWINDER=True,
+                               CMAKE_INSTALL_RPATH_USE_LINK_PATH=True,  # Fix finding libunwind.so
+                               LIBCXX_INCLUDE_TESTS=True,
+                               LLVM_LIT_ARGS=lit_args,
+                               LIBCXX_ENABLE_EXCEPTIONS=True,
+                               LIBCXX_ENABLE_RTTI=True,
+                               )
+        if not self.target_info.is_macos():
+            self.add_cmake_options(LIBCXX_ENABLE_STATIC_ABI_LIBRARY=True)
+
+    @classmethod
+    def setup_config_options(cls, **kwargs):
+        super().setup_config_options(**kwargs)
+        cls.test_localhost_via_ssh = cls.add_bool_option("test-localhost-via-ssh",
+                                                         help="Use the ssh.py executor for localhost (to check that "
+                                                              "it works correctly)")
+
+    def compile(self, **kwargs):
+        self.run_make(["unwind", "cxxabi", "cxx"])
+
+    def install(self, **kwargs):
+        self.run_make_install(target=["install-unwind", "install-cxxabi", "install-cxx"])
+
+    def run_tests(self):
+        # We can't use check-all since that will (currently) also build and test LLVM and using the
+        # individual check-* targets will overwrite the XML output.
+        # We could rename and merge the output files, but it seems simpler to invoke lit directly:
+        # self.run_make(["check-unwind", "check-cxxabi", "check-cxx"], cwd=self.build_dir)
+        args = ["--xunit-xml-output", "./llvm-libs-test-results.xml",
+                "--max-time", "3600", "--timeout", "120", "-s", "-vv",
+                "projects/libcxx/test", "projects/libcxxabi/test", "projects/libunwind/test"]
+        if self.test_localhost_via_ssh:
+            ssh_host = self.config.get_user_name() + "@" + platform.node()
+            try:
+                self.run_cmd(["ssh", ssh_host, "--", "echo Success."])
+            except subprocess.CalledProcessError:
+                self.fatal(self.target + "/test-localhost-via-ssh selected but cannot ssh to", ssh_host)
+            executor = commandline_to_str([self.source_dir / "../libcxx/utils/ssh.py", "--host", ssh_host])
+            args.append("-Dexecutor=" + executor)
+        self.run_cmd([sys.executable, "./bin/llvm-lit"] + args, cwd=self.build_dir)
+
+
+class BuildUpstreamLlvmLibs(BuildLlvmLibs):
+    target = "upstream-llvm-libs"
+    project_name = "upstream-llvm-libs"
+    repository = ReuseOtherProjectDefaultTargetRepository(BuildUpstreamLLVM, subdirectory="llvm")
+    llvm_project = BuildUpstreamLLVM

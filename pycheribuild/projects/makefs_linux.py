@@ -43,7 +43,7 @@ class BuildMakefsOnLinux(Project):
     def __init__(self, config: CheriConfig):
         super().__init__(config)
         if OSInfo.IS_LINUX:
-            self._addRequiredSystemHeader("bsd/bsd.h")
+            self.add_required_system_header("bsd/bsd.h")
         if not OSInfo.IS_FREEBSD:
             self.add_required_system_tool("bmake", homebrew="bmake", cheribuild_target="bmake")
 
@@ -59,12 +59,12 @@ class BuildMakefsOnLinux(Project):
         self.run_make(make_target="", parallel=False)
 
     def clean(self):
-        self.deleteFile(self.sourceDir / "builddir/.build_stamp")
-        self.clean_directory(self.sourceDir / "builddir")
+        self.delete_file(self.source_dir / "builddir/.build_stamp")
+        self.clean_directory(self.source_dir / "builddir")
         return super().clean()
 
     def install(self, **kwargs):
-        self.installFile(self.sourceDir / "builddir/usr.sbin/makefs/makefs", self.installDir / "bin/makefs")
+        self.install_file(self.source_dir / "builddir/usr.sbin/makefs/makefs", self.install_dir / "bin/makefs")
 
     def process(self):
         if OSInfo.IS_FREEBSD:

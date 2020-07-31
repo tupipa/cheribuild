@@ -36,7 +36,7 @@ import typing
 from pathlib import Path
 
 from .config.chericonfig import CheriConfig
-from .utils import AnsiColour, fatalError, printCommand, runCmd, statusUpdate, ThreadJoiner, warningMessage
+from .utils import AnsiColour, fatal_error, print_command, run_command, status_update, ThreadJoiner, warning_message
 
 
 class FileSystemUtils(object):
@@ -44,14 +44,14 @@ class FileSystemUtils(object):
         self.config = config
 
     def makedirs(self, path: Path):
+        print_command("mkdir", "-p", path, print_verbose_only=True)
         if not self.config.pretend and not path.is_dir():
-            printCommand("mkdir", "-p", path, print_verbose_only=True)
             os.makedirs(str(path), exist_ok=True)
 
     def _delete_directories(self, *dirs):
         # http://stackoverflow.com/questions/5470939/why-is-shutil-rmtree-so-slow
         # shutil.rmtree(path) # this is slooooooooooooooooow for big trees
-        runCmd("rm", "-rf", *dirs)
+        run_command("rm", "-rf", *dirs)
 
     def clean_directory(self, path: Path, keep_root=False, ensure_dir_exists=True) -> None:
         """ After calling this function path will be an empty directory
@@ -76,14 +76,14 @@ class FileSystemUtils(object):
         def run(self):
             try:
                 if self.parent.config.verbose:
-                    statusUpdate("Deleting", self.path, "asynchronously")
+                    status_update("Deleting", self.path, "asynchronously")
                 self.parent._delete_directories(self.path)
                 if self.parent.config.verbose:
-                    statusUpdate("Async delete of", self.path, "finished")
+                    status_update("Async delete of", self.path, "finished")
             except Exception as e:
-                warningMessage("Could not remove directory", self.path, e)
+                warning_message("Could not remove directory", self.path, e)
 
-    def async_clean_directory(self, path: Path, *, keep_root=False, keep_dirs: list=None) -> ThreadJoiner:
+    def async_clean_directory(self, path: Path, *, keep_root=False, keep_dirs: list = None) -> ThreadJoiner:
         """
         Delete a directory in the background (e.g. deleting the cheribsd build directory delays the build
         with self.async_clean_directory("foo")
@@ -96,15 +96,15 @@ class FileSystemUtils(object):
         be deleted though.
         :return:
         """
-        deleterThread = None
+        deleter_thread = None
         tempdir = path.with_suffix(".delete-me-pls")
         if not path.is_dir():
             self.makedirs(path)
         elif len(list(path.iterdir())) == 0:
-            statusUpdate("Not cleaning", path, "it is already empty")
+            status_update("Not cleaning", path, "it is already empty")
         else:
             if tempdir.is_dir():
-                warningMessage("Previous async cleanup of ", path, "failed. Cleaning up now")
+                warning_message("Previous async cleanup of ", path, "failed. Cleaning up now")
                 self._delete_directories(tempdir)
             if keep_root:
                 # Move all subdirectories/files to a temp directory and delete that
@@ -117,16 +117,16 @@ class FileSystemUtils(object):
                     all_entries_new = []
                     for i in all_entries:
                         if i.name in keep_dirs:
-                            statusUpdate("Not deleting", i, "- If you really want it removed, delete it manually.")
+                            status_update("Not deleting", i, "- If you really want it removed, delete it manually.")
                         else:
                             all_entries_new.append(i)
                     all_entries = all_entries_new
                 all_entries = list(map(str, all_entries))
                 if all_entries:
-                    runCmd(["mv"] + all_entries + [str(tempdir)], print_verbose_only=True)
+                    run_command(["mv"] + all_entries + [str(tempdir)], print_verbose_only=True)
             else:
                 # rename the directory, create a new dir and then delete it in a background thread
-                runCmd("mv", path, tempdir)
+                run_command("mv", path, tempdir)
                 self.makedirs(path)
         if not self.config.pretend:
             assert path.is_dir()
@@ -134,65 +134,68 @@ class FileSystemUtils(object):
                 assert len(list(path.iterdir())) == 0, list(path.iterdir())
         if tempdir.is_dir() or self.config.pretend:
             # we now have an empty directory, start background deleter and return to caller
-            deleterThread = FileSystemUtils.DeleterThread(self, tempdir)
-        return ThreadJoiner(deleterThread)
+            deleter_thread = FileSystemUtils.DeleterThread(self, tempdir)
+        return ThreadJoiner(deleter_thread)
 
     def copy_directory(self, src_path: Path, dst_path: Path):
-        printCommand("cp", "-r", src_path, dst_path, print_verbose_only=True)
+        print_command("cp", "-r", src_path, dst_path, print_verbose_only=True)
         if not self.config.pretend:
             shutil.copytree(str(src_path), str(dst_path))
 
-    def deleteFile(self, file: Path, print_verbose_only=False):
-        printCommand("rm", "-f", file, print_verbose_only=print_verbose_only)
-        if not file.is_file():
+    def delete_file(self, file: Path, print_verbose_only=False, warn_if_missing=False):
+        print_command("rm", "-f", file, print_verbose_only=print_verbose_only)
+        if not file.is_file() and not file.is_symlink():
+            if warn_if_missing:
+                warning_message("Expected", file, "to exist but is missing!")
             return
         if self.config.pretend:
             return
         file.unlink()
 
     @staticmethod
-    def copyRemoteFile(remotePath: str, targetFile: Path):
+    def copy_remote_file(remote_path: str, target_file: Path):
         # if we have rsync we can skip the copy if file is already up-to-date
         if shutil.which("rsync"):
             try:
-                runCmd("rsync", "-aviu", "--progress", remotePath, targetFile)
+                run_command("rsync", "-aviu", "--progress", remote_path, target_file)
             except subprocess.CalledProcessError as err:
                 if err.returncode == 127:
-                    warningMessage("rysnc doesn't seem to be installed on remote machine, trying scp")
-                    runCmd("scp", remotePath, targetFile)
+                    warning_message("rysnc doesn't seem to be installed on remote machine, trying scp")
+                    run_command("scp", remote_path, target_file)
                 else:
                     raise err
         else:
-            runCmd("scp", remotePath, targetFile)
+            run_command("scp", remote_path, target_file)
 
-    def readFile(self, file: Path) -> str:
+    def read_file(self, file: Path) -> str:
         # just return an empty string in pretend mode
         if self.config.pretend and not file.is_file():
             return "\n"
         with file.open("r", encoding="utf-8") as f:
             return f.read()
 
-    def writeFile(self, file: Path, contents: str, *, overwrite: bool, noCommandPrint=False, mode=None) -> None:
+    def write_file(self, file: Path, contents: str, *, overwrite: bool, never_print_cmd=False, mode=None) -> None:
         """
         :param file: The target path to write contents to
         :param contents: the contents of the new file
         :param mode: The file mode for the resulting file (octal number or string)
         :param overwrite: If true the file will be overwritten, otherwise it will cause an error if the file exists
-        :param noCommandPrint: don't ever print the echo commmand (even in verbose)
+        :param never_print_cmd: don't ever print the echo commmand (even in verbose)
         """
-        if not noCommandPrint:
-            printCommand("echo", contents, colour=AnsiColour.green, outputFile=file, print_verbose_only=True)
+        if not never_print_cmd:
+            print_command("echo", contents, colour=AnsiColour.green, output_file=file, print_verbose_only=True)
         if self.config.pretend:
             return
         if not overwrite and file.exists():
-            fatalError("File", file, "already exists!")
+            fatal_error("File", file, "already exists!")
         self.makedirs(file.parent)
         with file.open("w", encoding="utf-8") as f:
             f.write(contents)
         if mode:
             file.chmod(mode)
 
-    def createSymlink(self, src: Path, dest: Path, *, relative=True, cwd: Path = None, print_verbose_only = True):
+    @staticmethod
+    def create_symlink(src: Path, dest: Path, *, relative=True, cwd: Path = None, print_verbose_only=True):
         assert dest.is_absolute() or cwd is not None
         if not cwd:
             cwd = dest.parent
@@ -201,41 +204,55 @@ class FileSystemUtils(object):
                 src = os.path.relpath(str(src), str(dest.parent if dest.is_absolute() else cwd))
             if cwd is not None and cwd.is_dir():
                 dest = dest.relative_to(cwd)
-            runCmd("ln", "-fsn", src, dest, cwd=cwd, print_verbose_only=print_verbose_only)
+            run_command("ln", "-fsn", src, dest, cwd=cwd, print_verbose_only=print_verbose_only)
         else:
-            runCmd("ln", "-fsn", src, dest, cwd=cwd, print_verbose_only=print_verbose_only)
+            run_command("ln", "-fsn", src, dest, cwd=cwd, print_verbose_only=print_verbose_only)
 
-    def moveFile(self, src: Path, dest: Path, force=False, createDirs=True):
+    def move_file(self, src: Path, dest: Path, force=False, create_dirs=True):
         if not src.exists():
-            fatalError(src, "doesn't exist")
+            fatal_error(src, "doesn't exist")
         cmd = ["mv", "-f"] if force else ["mv"]
-        if createDirs and not dest.parent.exists():
+        if create_dirs and not dest.parent.exists():
             self.makedirs(dest.parent)
-        runCmd(cmd + [str(src), str(dest)])
+        run_command(cmd + [str(src), str(dest)])
 
-    def installFile(self, src: Path, dest: Path, *, force=False, createDirs=True, print_verbose_only=True, mode=None):
+    def install_file(self, src: Path, dest: Path, *, force=False, create_dirs=True, print_verbose_only=True, mode=None):
         if force:
-            printCommand("cp", "-f", src, dest, print_verbose_only=print_verbose_only)
+            print_command("cp", "-f", src, dest, print_verbose_only=print_verbose_only)
         else:
-            printCommand("cp", src, dest, print_verbose_only=print_verbose_only)
+            print_command("cp", src, dest, print_verbose_only=print_verbose_only)
         if self.config.pretend:
             if mode is not None:
-                printCommand("chmod", oct(mode), dest, print_verbose_only=print_verbose_only)
+                print_command("chmod", oct(mode), dest, print_verbose_only=print_verbose_only)
             return
-        assert not dest.is_dir(), "installFile: target is a directory and not a file: " + str(dest)
+        assert not dest.is_dir(), "install_file: target is a directory and not a file: " + str(dest)
         if (dest.is_symlink() or dest.exists()) and force:
             dest.unlink()
         if not src.exists():
-            fatalError("Required file", src, "does not exist")
-        if createDirs and not dest.parent.exists():
+            fatal_error("Required file", src, "does not exist")
+        if create_dirs and not dest.parent.exists():
             self.makedirs(dest.parent)
         if dest.is_symlink():
             dest.unlink()
         # noinspection PyArgumentList
         shutil.copy(str(src), str(dest), follow_symlinks=False)
         if mode is not None:
-            printCommand("chmod", oct(mode), dest, print_verbose_only=print_verbose_only)
+            print_command("chmod", oct(mode), dest, print_verbose_only=print_verbose_only)
             dest.chmod(mode)
+
+    def rewrite_file(self, file: Path, rewrite: typing.Callable[[typing.Iterable[str]], typing.Iterable[str]]):
+        if self.config.pretend:
+            return
+        if not file.exists():
+            fatal_error("Required file", file, "does not exist")
+        with file.open("r+", encoding="utf-8") as f:
+            lines = list(rewrite(f.read().splitlines()))
+            f.seek(0)
+            f.writelines(map(lambda line: line + '\n', lines))
+            f.truncate()
+
+    def add_unique_line_to_file(self, file: Path, line):
+        self.rewrite_file(file, lambda lines: lines if line in lines else (lines + [line]))
 
     @property
     def triple_prefixes_for_binaries(self) -> typing.Iterable[str]:
@@ -256,12 +273,12 @@ class FileSystemUtils(object):
         if not tool_name:
             tool_name = tool_path.name
         if not tool_path.is_file():
-            fatalError("Attempting to create symlink to non-existent build tool_path:", tool_path)
+            fatal_error("Attempting to create symlink to non-existent build tool_path:", tool_path)
 
         # a prefixed tool_path was installed -> create link such as mips4-unknown-freebsd-ld -> ld
         if create_unprefixed_link:
             assert tool_path.name != tool_name
-            runCmd("ln", "-fsn", tool_path.name, tool_name, cwd=cwd, print_verbose_only=True)
+            run_command("ln", "-fsn", tool_path.name, tool_name, cwd=cwd, print_verbose_only=True)
 
         for target in self.triple_prefixes_for_binaries:
             link = tool_path.parent / (target + tool_name)  # type: Path
@@ -269,16 +286,16 @@ class FileSystemUtils(object):
                 # if self.config.verbose:
                 #    print(coloured(AnsiColour.yellow, "Not overwriting", link, "because it is the target"))
                 continue
-            runCmd("ln", "-fsn", tool_path.name, target + tool_name, cwd=cwd, print_verbose_only=True)
+            run_command("ln", "-fsn", tool_path.name, target + tool_name, cwd=cwd, print_verbose_only=True)
 
     @staticmethod
     # Not cached since another target could write to this dir: @functools.lru_cache(maxsize=20)
     def is_nonexistent_or_empty_dir(d: Path):
-        #print("Checking if dir is empty:", d)
+        # print("Checking if dir is empty:", d)
         if not d.exists():
             return True
-        for i, item in enumerate(d.iterdir()):
-            #print(d, "is not empty, found ", item)
+        for _ in d.iterdir():
+            # print(d, "is not empty, found ", item)
             return False
-        #print(d, "is empty")
+        # print(d, "is empty")
         return True

@@ -32,7 +32,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from pathlib import Path
 
-from ..utils import getCompilerInfo, OSInfo
+from ..utils import get_compiler_info, OSInfo
 
 if typing.TYPE_CHECKING:  # no-combine
     from .chericonfig import CheriConfig  # no-combine    # pytype: disable=pyi-error
@@ -162,6 +162,7 @@ class TargetInfo(ABC):
         """Flags that need to be passed to cc/c++/cpp in all cases"""
         return []
 
+    # noinspection PyMethodMayBeStatic
     def required_link_flags(self) -> typing.List[str]:
         """Flags that need to be passed to cc/c++ for linking"""
         return []
@@ -262,21 +263,39 @@ class TargetInfo(ABC):
         if config.use_sdk_clang_for_native_xbuild and not OSInfo.IS_MAC:
             # SDK clang doesn't work for native builds on macos
             return config.cheri_sdk_bindir / "clang"
-        return config.clangPath
+        return config.clang_path
 
     @staticmethod
     def host_cxx_compiler(config: "CheriConfig") -> Path:
         if config.use_sdk_clang_for_native_xbuild and not OSInfo.IS_MAC:
             # SDK clang doesn't work for native builds on macos
             return config.cheri_sdk_bindir / "clang++"
-        return config.clangPlusPlusPath
+        return config.clang_plusplus_path
 
     @staticmethod
     def host_c_preprocessor(config: "CheriConfig") -> Path:
         if config.use_sdk_clang_for_native_xbuild and not OSInfo.IS_MAC:
             # SDK clang doesn't work for native builds on macos
             return config.cheri_sdk_bindir / "clang-cpp"
-        return config.clangCppPath
+        return config.clang_cpp_path
+
+
+# https://reviews.llvm.org/rG14daa20be1ad89639ec209d969232d19cf698845
+class AutoVarInit(Enum):
+    NONE = "none"
+    ZERO = "zero"
+    PATTERN = "pattern"
+
+    def clang_flags(self) -> "typing.List[str]":
+        if self is None:
+            return []  # Equivalent to -ftrivial-auto-var-init=uninitialized
+        elif self is AutoVarInit.ZERO:
+            return ["-ftrivial-auto-var-init=zero",
+                    "-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"]
+        elif self is AutoVarInit.PATTERN:
+            return ["-ftrivial-auto-var-init=pattern"]
+        else:
+            raise NotImplementedError()
 
 
 class NativeTargetInfo(TargetInfo):
@@ -306,14 +325,18 @@ class NativeTargetInfo(TargetInfo):
 
     @property
     def target_triple(self):
-        return getCompilerInfo(self.c_compiler).default_target
+        return get_compiler_info(self.c_compiler).default_target
 
     @property
     def c_compiler(self) -> Path:
+        if hasattr(self.project, "custom_c_compiler"):
+            return self.project.custom_c_compiler
         return self.host_c_compiler(self.config)
 
     @property
     def cxx_compiler(self) -> Path:
+        if hasattr(self.project, "custom_cxx_compiler"):
+            return self.project.custom_cxx_compiler
         return self.host_cxx_compiler(self.config)
 
     @property
@@ -328,6 +351,8 @@ class NativeTargetInfo(TargetInfo):
 
     @property
     def c_preprocessor(self) -> Path:
+        if hasattr(self.project, "custom_c_preprocessor"):
+            return self.project.custom_c_preprocessor
         return self.host_c_preprocessor(self.config)
 
     @classmethod
@@ -348,7 +373,20 @@ class NativeTargetInfo(TargetInfo):
 
     @property
     def essential_compiler_and_linker_flags(self) -> typing.List[str]:
-        return []  # default host compiler should not need any extra flags
+        result = []
+        if self.project.auto_var_init != AutoVarInit.NONE:
+            compiler = get_compiler_info(self.c_compiler)
+            if compiler.is_apple_clang:
+                # Not sure which apple clang version is the first to support it but 11.0.3 on my system does
+                valid_clang_version = compiler.version >= (11, 0)
+            else:
+                # Clang 8.0.0 is the first to support auto-var-init
+                valid_clang_version = compiler.is_clang and compiler.version >= (8, 0)
+            if valid_clang_version:
+                result += self.project.auto_var_init.clang_flags()
+            else:
+                self.project.fatal("Requested automatic variable initialization, but don't know how to for", compiler)
+        return result  # default host compiler should not need any extra flags
 
 
 class Linkage(Enum):
@@ -370,7 +408,6 @@ class MipsFloatAbi(Enum):
 
 class CrossCompileTarget(object):
     # Currently the same for all targets
-    DEFAULT_CAP_TABLE_ABI = "pcrel"
     DEFAULT_SUBOBJECT_BOUNDS = "conservative"
 
     def __init__(self, suffix: str, cpu_architecture: CPUArchitecture, target_info_cls: "typing.Type[TargetInfo]",
@@ -453,7 +490,7 @@ class CrossCompileTarget(object):
             # MIPS supports 128/256 -> include that in the configuration
             result += config.mips_cheri_bits_str
         if self.is_hybrid_or_purecap_cheri():
-            if config.cheri_cap_table_abi != self.DEFAULT_CAP_TABLE_ABI:
+            if config.cheri_cap_table_abi:
                 result += "-" + str(config.cheri_cap_table_abi)
             if config.subobject_bounds is not None and config.subobject_bounds != self.DEFAULT_SUBOBJECT_BOUNDS:
                 result += "-" + str(config.subobject_bounds)

@@ -28,9 +28,10 @@
 # SUCH DAMAGE.
 #
 import typing
+from pathlib import Path
 
-from .project import CheriConfig, DefaultInstallDir, GitRepository, MakeCommandKind, Path, Project
-from ..utils import get_program_version, OSInfo, setEnv, statusUpdate, warningMessage
+from .project import CheriConfig, DefaultInstallDir, GitRepository, MakeCommandKind, Project
+from ..utils import get_program_version, OSInfo, set_env
 
 
 class BuildElftoolchain(Project):
@@ -44,9 +45,8 @@ class BuildElftoolchain(Project):
     def __init__(self, config: CheriConfig):
         super().__init__(config)
         # TODO: move this to project
-        self.makedirs(self.buildDir)
-        self.make_args.env_vars["MAKEOBJDIRPREFIX"] = self.buildDir
-        self.makeArgs = ["WITH_TESTS=no", "-DNO_ROOT"]
+        self.makedirs(self.build_dir)
+        self.make_args.env_vars["MAKEOBJDIRPREFIX"] = self.build_dir
         # TODO: build static?
         if self.build_static:
             self.make_args.set(LDSTATIC="-static")
@@ -61,22 +61,22 @@ class BuildElftoolchain(Project):
 
         if not self.config.verbose:
             self.make_args.add_flags("-s")
-        self.programsToBuild = ["brandelf", "elfcopy", "elfdump", "strings", "nm", "readelf", "addr2line",
-                                "size", "findtextrel"]
+        self.programs_to_build = ["brandelf", "elfcopy", "elfdump", "strings", "nm", "readelf", "addr2line",
+                                  "size", "findtextrel"]
         # some make targets install more than one tool:
         # strip, objcopy and mcs are links to elfcopy and ranlib is a link to ar
-        self.extraPrograms = ["strip", "objcopy", "mcs"]
-        self.libTargets = ["common", "libelf", "libelftc", "libdwarf"]
+        self.extra_programs = ["strip", "objcopy", "mcs"]
+        self.lib_targets = ["common", "libelf", "libelftc", "libdwarf"]
         if self.build_ar:
-            self.programsToBuild.append("ar")
-            self.extraPrograms.append("ranlib")
+            self.programs_to_build.append("ar")
+            self.extra_programs.append("ranlib")
 
     @classmethod
     def setup_config_options(cls, **kwargs):
         super().setup_config_options(**kwargs)
         cls.build_ar = cls.add_bool_option("build-ar", default=True, help="build the ar/ranlib programs")
         cls.build_static = cls.add_bool_option("build-static", help="Try to link elftoolchain statically "
-                                                                  "(needs patches on Linux)")
+                                                                    "(needs patches on Linux)")
 
     def check_system_dependencies(self):
         super().check_system_dependencies()
@@ -91,27 +91,27 @@ class BuildElftoolchain(Project):
             if version > 20170101:
                 is_old_broken_bmake = False
             else:
-                statusUpdate("Note: Working around old version of bmake: ", version)
+                self.info("Note: Working around old version of bmake: ", version)
         except Exception as e:
-            warningMessage("Could not determine bmake version:", e)
+            self.warning("Could not determine bmake version:", e)
         if is_old_broken_bmake:
             # build is not parallel-safe -> we can't make with all the all-foo targets and -jN
             # To speed it up run make for the individual library directories instead and then for all the binaries
             first_call = True  # recreate logfile on first call, after that append
-            for tgt in self.libTargets + self.programsToBuild:
-                self.run_make("obj", cwd=self.sourceDir / tgt, logfile_name="build", append_to_logfile=not first_call)
-                self.run_make("all", cwd=self.sourceDir / tgt, logfile_name="build", append_to_logfile=True)
+            for tgt in self.lib_targets + self.programs_to_build:
+                self.run_make("obj", cwd=self.source_dir / tgt, logfile_name="build", append_to_logfile=not first_call)
+                self.run_make("all", cwd=self.source_dir / tgt, logfile_name="build", append_to_logfile=True)
                 first_call = False
         else:
-            self.run_make("obj", cwd=self.sourceDir)
-            self.run_make("all", cwd=self.sourceDir, append_to_logfile=True)
+            self.run_make("obj", cwd=self.source_dir)
+            self.run_make("all", cwd=self.source_dir, append_to_logfile=True)
 
     def install(self, **kwargs):
-        self.makedirs(self.installDir / "bin")
+        self.makedirs(self.install_dir / "bin")
         # We don't actually want to install all the files, just copy the binaries that we want
         group = self.config.get_group_name()
         user = self.config.get_user_name()
-        self.make_args.set(DESTDIR=self.installDir)
+        self.make_args.set(DESTDIR=self.install_dir)
         self.make_args.set(
             # elftoolchain tries to install as root -> override *GRP and *OWN flags
             BINGRP=group, BINOWN=user,
@@ -119,7 +119,7 @@ class BuildElftoolchain(Project):
             INFOGRP=group, INFOOWN=user,
             LIBGRP=group, LIBOWN=user,
             FILESGRP=group, FILESOWN=user,
-        )
+            )
 
         self.make_args.set(
             BINDIR="/bin",
@@ -135,27 +135,27 @@ class BuildElftoolchain(Project):
         mandirs = ("share/man/man1", "share/man/man3", "share/man/man5", "share/man1", "share/man3", "share/man5")
         # The build system assumes all install directories already exist;
         for i in ("bin", "lib", "include", "share") + mandirs:
-            self.makedirs(self.installDir / i)
-        firstCall = True  # recreate logfile on first call, after that append
-        for tgt in self.programsToBuild:
-            self.runMakeInstall(cwd=self.sourceDir / tgt, logfile_name="install", append_to_logfile=not firstCall,
-                                parallel=False)
-            firstCall = False
+            self.makedirs(self.install_dir / i)
+        first_call = True  # recreate logfile on first call, after that append
+        for tgt in self.programs_to_build:
+            self.run_make_install(cwd=self.source_dir / tgt, logfile_name="install", append_to_logfile=not first_call,
+                                  parallel=False)
+            first_call = False
 
-        allInstalledTools = self.programsToBuild + self.extraPrograms
-        for prog in allInstalledTools:
+        all_installed_tools = self.programs_to_build + self.extra_programs
+        for prog in all_installed_tools:
             if prog == "strip":
-                self.deleteFile(self.installDir / "bin" / ("cheri-unknown-freebsd-" + prog))
-                self.deleteFile(self.installDir / "bin" / ("mips64-unknown-freebsd-" + prog))
-                self.deleteFile(self.installDir / "bin" / ("mips4-unknown-freebsd-" + prog))
+                self.delete_file(self.install_dir / "bin" / ("cheri-unknown-freebsd-" + prog))
+                self.delete_file(self.install_dir / "bin" / ("mips64-unknown-freebsd-" + prog))
+                self.delete_file(self.install_dir / "bin" / ("mips4-unknown-freebsd-" + prog))
             else:
-                self.create_triple_prefixed_symlinks(self.installDir / "bin" / prog)
+                self.create_triple_prefixed_symlinks(self.install_dir / "bin" / prog)
         # if we didn't build ar/ranlib add symlinks to the versions in /usr/bin
         if not self.build_ar:
-            self.createSymlink(Path("/usr/bin/ar"), self.installDir / "bin/ar", relative=False)
-            self.create_triple_prefixed_symlinks(self.installDir / "bin/ar")
-            self.createSymlink(Path("/usr/bin/ranlib"), self.installDir / "bin/ranlib", relative=False)
-            self.create_triple_prefixed_symlinks(self.installDir / "bin/ranlib")
+            self.create_symlink(Path("/usr/bin/ar"), self.install_dir / "bin/ar", relative=False)
+            self.create_triple_prefixed_symlinks(self.install_dir / "bin/ar")
+            self.create_symlink(Path("/usr/bin/ranlib"), self.install_dir / "bin/ranlib", relative=False)
+            self.create_triple_prefixed_symlinks(self.install_dir / "bin/ranlib")
 
     @property
     def triple_prefixes_for_binaries(self) -> typing.Iterable[str]:
@@ -163,5 +163,5 @@ class BuildElftoolchain(Project):
 
     def process(self):
         # work around bug in latest bmake that assumes metamode support
-        with setEnv(META_NOECHO="echo"):
+        with set_env(META_NOECHO="echo"):
             super().process()

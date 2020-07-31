@@ -1,8 +1,9 @@
+import os
 import pytest
 import sys
 import io
-import os
 import tempfile
+
 try:
     import typing
 except ImportError:
@@ -14,6 +15,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 from pycheribuild.mtree import MtreeFile
 
 HAVE_LCHMOD = True
+if "_TEST_SKIP_METALOG" in os.environ:
+    del os.environ["_TEST_SKIP_METALOG"]
 
 
 def _create_file(parent: Path, name: str, mode: int) -> Path:
@@ -73,7 +76,7 @@ def test_add_dir():
 def test_add_dir_infer_mode():
     mtree = MtreeFile()
     with tempfile.TemporaryDirectory() as td:
-        parent_dir = _create_dir(td, "parent", 0o750)
+        parent_dir = _create_dir(Path(td), "parent", 0o750)
         testdir = _create_dir(parent_dir, "testdir", 0o700)
         mtree.add_dir("foo/bar", reference_dir=testdir)
         expected = """#mtree 2.0
@@ -88,7 +91,7 @@ def test_add_dir_infer_mode():
 def test_add_file_infer_mode():
     mtree = MtreeFile()
     with tempfile.TemporaryDirectory() as td:
-        parent_dir = _create_dir(td, "parent", 0o750)
+        parent_dir = _create_dir(Path(td), "parent", 0o750)
         testdir = _create_dir(parent_dir, "testdir", 0o700)
         testfile = _create_file(testdir, "file", 0o666)
         testlink = _create_symlink(testdir, name="link", target="file", mode=0o444)
@@ -113,7 +116,7 @@ def test_add_file_infer_mode():
 def test_add_file_infer_ssh_mode():
     mtree = MtreeFile()
     with tempfile.TemporaryDirectory() as td:
-        root_dir = _create_dir(td, "root", 0o744)
+        root_dir = _create_dir(Path(td), "root", 0o744)
         ssh_dir = _create_dir(root_dir, ".ssh", 0o777)
         auth_keys = _create_file(ssh_dir, "authorized_keys", 0o666)
         privkey = _create_file(ssh_dir, "id_foo", 0o754)
@@ -225,15 +228,15 @@ def test_add_file():
 
 
 @pytest.yield_fixture(params=["/usr/bin", "/this/does/not/exist", "./testfile", "testfile", "/tmp/testfile",
-                        "../this/does/not/exist"], )
+                              "../this/does/not/exist"], )
 def temp_symlink():
     target = "/usr/bin"
     with tempfile.TemporaryDirectory() as td:
-        link = _create_symlink(td, "testlink", target, mode=0o644)
-        file = _create_file(td, "testfile", mode=0o700)
+        link = _create_symlink(Path(td), "testlink", target, mode=0o644)
+        file = _create_file(Path(td), "testfile", mode=0o700)
         yield link, file, target  # provide the fixture value
 
-
+# noinspection PyShadowingNames
 def test_symlink_symlink(temp_symlink):
     mtree = MtreeFile()
     print(temp_symlink)
@@ -250,6 +253,7 @@ def test_symlink_symlink(temp_symlink):
     assert expected == _get_as_str(mtree)
 
 
+# noinspection PyShadowingNames
 def test_symlink_infer_mode(temp_symlink):
     mtree = MtreeFile()
     print(temp_symlink)
@@ -265,4 +269,3 @@ def test_symlink_infer_mode(temp_symlink):
 # END
 """.format(target=temp_symlink[2], testfile=str(temp_symlink[1]), symlink_perms=symlink_perms)
     assert expected == _get_as_str(mtree)
-

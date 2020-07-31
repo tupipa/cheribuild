@@ -29,9 +29,10 @@
 #
 import re
 
-from .crosscompileproject import (CheriConfig, commandline_to_str, CompilationTargets, CrossCompileAutotoolsProject,
-                                  DefaultInstallDir, GitRepository, MakeCommandKind)
+from .crosscompileproject import (CheriConfig, CrossCompileAutotoolsProject,
+                                  DefaultInstallDir, FettProjectMixin, GitRepository, MakeCommandKind)
 from .openssl import BuildFettOpenSSL
+from ...utils import commandline_to_str
 
 
 class BuildNginx(CrossCompileAutotoolsProject):
@@ -49,7 +50,7 @@ class BuildNginx(CrossCompileAutotoolsProject):
 
     def __init__(self, config: CheriConfig):
         super().__init__(config)
-        self.configureCommand = self.sourceDir / "auto/configure"
+        self.configure_command = self.source_dir / "auto/configure"
         if not self.compiling_for_host():
             self.COMMON_FLAGS.extend(["-pedantic",
                                       "-Wno-gnu-statement-expression",
@@ -57,81 +58,86 @@ class BuildNginx(CrossCompileAutotoolsProject):
                                       # "-Wno-extended-offsetof",
                                       "-Wno-format-pedantic",
                                       ])
-            self.configureEnvironment["AR"] = str(self.sdk_bindir / "cheri-unknown-freebsd-ar")
+            self.configure_environment["AR"] = str(self.sdk_bindir / "cheri-unknown-freebsd-ar")
         # The makefile expects the current working directory to be the source dir. Therefore we add -f $build/Makefile
         # This is also in the makefile generated in the source dir but it doesn't work with multiple build dirs
-        self.make_args.add_flags("-f", self.buildDir / "Makefile")
+        self.make_args.add_flags("-f", self.build_dir / "Makefile")
         self.cross_warning_flags += ["-Wno-error=cheri-capability-misuse", "-Wno-error=sign-compare"]
 
     def install(self, **kwargs):
         # We have to run make inside the source directory
-        self.runMakeInstall(cwd=self.sourceDir)
-        self.installFile(self.sourceDir / "fetchbench", self.real_install_root_dir / "sbin/fetchbench")
+        self.run_make_install(cwd=self.source_dir)
+        self.install_file(self.source_dir / "fetchbench", self.real_install_root_dir / "sbin/fetchbench")
         # install the benchmark script
-        benchmark = self.readFile(self.sourceDir / "nginx-benchmark.sh")
+        benchmark = self.read_file(self.source_dir / "nginx-benchmark.sh")
         if not self.compiling_for_host():
-            benchmark = re.sub(r'NGINX=.*', "NGINX=\"" + str(self.installPrefix / "sbin/nginx") + "\"", benchmark)
-            benchmark = re.sub(r'FETCHBENCH=.*', "FETCHBENCH=\"" + str(self.installPrefix / "sbin/fetchbench") + "\"",
+            benchmark = re.sub(r'NGINX=.*', "NGINX=\"" + str(self.install_prefix / "sbin/nginx") + "\"", benchmark)
+            benchmark = re.sub(r'FETCHBENCH=.*', "FETCHBENCH=\"" + str(self.install_prefix / "sbin/fetchbench") + "\"",
                                benchmark)
-        self.writeFile(self.real_install_root_dir / "nginx-benchmark.sh", benchmark, overwrite=True, mode=0o755)
+        self.write_file(self.real_install_root_dir / "nginx-benchmark.sh", benchmark, overwrite=True, mode=0o755)
 
-    def needsConfigure(self):
-        return not (self.buildDir / "Makefile").exists()
+    def needs_configure(self):
+        return not (self.build_dir / "Makefile").exists()
 
     def configure(self):
         if self.should_include_debug_info:
-            self.configureArgs.append("--with-debug")
-        self.configureArgs.extend(["--without-pcre",
-                                   "--without-http_rewrite_module",
-                                   "--with-http_v2_module",
-                                   "--with-http_ssl_module",
-                                   "--without-http_gzip_module",
-                                   "--without-http_rewrite_module",
-                                   "--without-pcre",
-                                   "--builddir=" + str(self.buildDir)])
+            self.configure_args.append("--with-debug")
+        self.configure_args.extend(["--without-pcre",
+                                    "--without-http_rewrite_module",
+                                    "--with-http_v2_module",
+                                    "--with-http_ssl_module",
+                                    "--without-http_gzip_module",
+                                    "--without-http_rewrite_module",
+                                    "--without-pcre",
+                                    "--builddir=" + str(self.build_dir)])
         if not self.compiling_for_host():
             self.LDFLAGS.append("-v")
-            self.configureArgs.extend(["--crossbuild=FreeBSD:12.0-CURRENT:mips",
-                                       "--with-cc-opt=" + commandline_to_str(self.default_compiler_flags),
-                                       "--with-ld-opt=" + commandline_to_str(self.default_ldflags),
-                                       "--sysroot=" + str(self.sdk_sysroot),
-                                       ])
-            self.configureEnvironment["CC_TEST_FLAGS"] = commandline_to_str(self.default_compiler_flags)
-            self.configureEnvironment["NGX_TEST_LD_OPT"] = commandline_to_str(self.default_ldflags)
-            self.configureEnvironment["NGX_SIZEOF_int"] = "4"
-            self.configureEnvironment["NGX_SIZEOF_sig_atomic_t"] = "4"  # on mips it is an int
-            self.configureEnvironment["NGX_SIZEOF_long"] = "8"
-            self.configureEnvironment["NGX_SIZEOF_long_long"] = "8"
-            self.configureEnvironment["NGX_SIZEOF_size_t"] = "8"
-            self.configureEnvironment["NGX_SIZEOF_off_t"] = "8"
-            self.configureEnvironment["NGX_SIZEOF_time_t"] = "8"
-            self.configureEnvironment["NGX_SIZEOF_void_p"] = str(self.target_info.pointer_size)
-            self.configureEnvironment["NGX_HAVE_MAP_DEVZERO"] = "yes"
-            self.configureEnvironment["NGX_HAVE_SYSVSHM"] = "yes"
-            self.configureEnvironment["NGX_HAVE_MAP_ANON"] = "yes"
-            self.configureEnvironment["NGX_HAVE_POSIX_SEM"] = "yes"
-        super().configure(cwd=self.sourceDir)
+            self.configure_args.extend(["--crossbuild=FreeBSD:12.0-CURRENT:mips",
+                                        "--with-cc-opt=" + commandline_to_str(self.default_compiler_flags),
+                                        "--with-ld-opt=" + commandline_to_str(self.default_ldflags),
+                                        "--sysroot=" + str(self.sdk_sysroot),
+                                        ])
+            self.configure_environment["CC_TEST_FLAGS"] = commandline_to_str(self.default_compiler_flags)
+            self.configure_environment["NGX_TEST_LD_OPT"] = commandline_to_str(self.default_ldflags)
+            self.configure_environment["NGX_SIZEOF_int"] = "4"
+            self.configure_environment["NGX_SIZEOF_sig_atomic_t"] = "4"  # on mips it is an int
+            self.configure_environment["NGX_SIZEOF_long"] = "8"
+            self.configure_environment["NGX_SIZEOF_long_long"] = "8"
+            self.configure_environment["NGX_SIZEOF_size_t"] = "8"
+            self.configure_environment["NGX_SIZEOF_off_t"] = "8"
+            self.configure_environment["NGX_SIZEOF_time_t"] = "8"
+            self.configure_environment["NGX_SIZEOF_void_p"] = str(self.target_info.pointer_size)
+            self.configure_environment["NGX_HAVE_MAP_DEVZERO"] = "yes"
+            self.configure_environment["NGX_HAVE_SYSVSHM"] = "yes"
+            self.configure_environment["NGX_HAVE_MAP_ANON"] = "yes"
+            self.configure_environment["NGX_HAVE_POSIX_SEM"] = "yes"
+        super().configure(cwd=self.source_dir)
 
     def compile(self, **kwargs):
         # The cwd for make needs to be the source dir and it expects an empty target name
-        self.run_make(cwd=self.sourceDir)
+        self.run_make(cwd=self.source_dir)
 
 
-class BuildFettNginx(BuildNginx):
+class BuildFettNginx(FettProjectMixin, BuildNginx):
     project_name = "fett-nginx"
     path_in_rootfs = "/fett/nginx"
-    default_architecture = CompilationTargets.FETT_DEFAULT_ARCHITECTURE
     repository = GitRepository("https://github.com/CTSRD-CHERI/nginx.git", default_branch="fett")
     dependencies = ["fett-openssl"]
 
     def configure(self):
-        openssl_dir = str(BuildFettOpenSSL.get_instance(self)._installPrefix)
-        self.configureEnvironment["NGX_OPENSSL_fett_path"] = str(BuildFettOpenSSL.get_instance(self).destdir) + openssl_dir
-        self.configureEnvironment["NGX_OPENSSL_fett_rpath"] = openssl_dir + "/lib"
+        openssl_dir = str(BuildFettOpenSSL.get_instance(self)._install_prefix)
+        self.configure_environment["NGX_OPENSSL_fett_path"] = str(
+            BuildFettOpenSSL.get_instance(self).destdir) + openssl_dir
+        self.configure_environment["NGX_OPENSSL_fett_rpath"] = openssl_dir + "/lib"
         super().configure()
 
     def install(self):
         super().install()
-        nginx_conf = self.installDir / "conf/nginx.conf"
-        if nginx_conf.is_file():
-            self.deleteFile(nginx_conf)
+        # Remove files we need to replace later
+        remove_files = [
+            self.install_dir / "conf/nginx.conf",
+            self.install_dir / "conf/mime.types",
+            ]
+        for file in remove_files:
+            if file.is_file():
+                self.delete_file(file)

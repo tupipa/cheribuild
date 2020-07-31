@@ -34,7 +34,7 @@ import typing
 from pathlib import Path
 
 from .config.target_info import CPUArchitecture, CrossCompileTarget
-from .utils import runCmd
+from .utils import run_command
 
 
 class QemuOptions:
@@ -59,11 +59,12 @@ class QemuOptions:
         elif xtarget.is_any_x86():
             self.qemu_arch_sufffix = "x86_64" if xtarget.is_x86_64() else "i386"
             self.can_boot_kernel_directly = False  # boot from disk
-            self.machine_flags = []  # default CPU (and NOT -M virt!)
+            # Try to use KVM instead of TCG if possible to speed up emulation
+            self.machine_flags = ["-M", "accel=kvm:xen:hax:tcg"]  # default CPU (and NOT -M virt!)
         elif xtarget.is_aarch64():
             self.qemu_arch_sufffix = "aarch64"
             self.can_boot_kernel_directly = False  # boot from disk
-            self.machine_flags = ["-M", "virt"]
+            self.machine_flags = ["-M", "virt,gic-version=3", "-cpu", "cortex-a72", "-bios", "edk2-aarch64-code.fd"]
         else:
             raise ValueError("Unknown target " + str(xtarget))
 
@@ -148,12 +149,12 @@ class QemuOptions:
 def qemu_supports_9pfs(qemu: Path) -> bool:
     if not qemu.is_file():
         return False
-    prog = runCmd([str(qemu), "-virtfs", "?"], stdin=subprocess.DEVNULL, captureOutput=True, captureError=True,
-        runInPretendMode=True, expected_exit_code=1, print_verbose_only=True)
+    prog = run_command([str(qemu), "-virtfs", "?"], stdin=subprocess.DEVNULL, capture_output=True, capture_error=True,
+                       run_in_pretend_mode=True, expected_exit_code=1, print_verbose_only=True)
     return b"-virtfs ?: Usage: -virtfs" in prog.stderr
 
 
-def riscv_bios_arguments(xtarget: CrossCompileTarget, caller, prefer_bbl=True) -> typing.List[str]:
+def riscv_bios_arguments(xtarget: CrossCompileTarget, _, prefer_bbl=True) -> typing.List[str]:
     assert xtarget.is_riscv(include_purecap=True)
     if xtarget.is_hybrid_or_purecap_cheri([CPUArchitecture.RISCV64]):
         # noinspection PyUnreachableCode

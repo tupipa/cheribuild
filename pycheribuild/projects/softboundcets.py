@@ -33,7 +33,7 @@ from .llvm import BuildLLVMMonoRepoBase
 from .project import DefaultInstallDir, GitRepository
 
 
-# install_to_soaap_dir = ComputedDefaultValue(function=lambda config, project: config.outputRoot / "soaap",
+# install_to_soaap_dir = ComputedDefaultValue(function=lambda config, project: config.output_root / "soaap",
 #                                            as_string="$INSTALL_ROOT/soaap")
 
 
@@ -48,7 +48,7 @@ class BuildSoftBoundCETS(BuildLLVMMonoRepoBase):
         super().compile(**kwargs)
         make = shutil.which("gmake") or "make"
         # TODO: clean runtime
-        self.run_cmd(make, cwd=self.sourceDir / "runtime")
+        self.run_cmd(make, cwd=self.source_dir / "runtime")
 
     def install(self, **kwargs):
         self.info("Not installing, to use SoftBoundCETS run from the source dir")

@@ -1,4 +1,4 @@
-#-
+# -
 # SPDX-License-Identifier: BSD-2-Clause
 #
 # Author: Hesham Almatary <Hesham.Almatary@cl.cam.ac.uk>
@@ -32,12 +32,12 @@
 import os
 
 from .crosscompileproject import CheriConfig, CompilationTargets, CrossCompileProject, DefaultInstallDir, GitRepository
-from ...utils import setEnv
+from ...utils import set_env
 
 
 class BuildRtems(CrossCompileProject):
     repository = GitRepository("https://github.com/CTSRD-CHERI/rtems",
-        force_branch=True, default_branch="cheri_waf1")
+                               force_branch=True, default_branch="cheri_waf1")
     target = "rtems"
     project_name = "rtems"
     dependencies = ["newlib", "compiler-rt-builtins"]
@@ -58,27 +58,27 @@ class BuildRtems(CrossCompileProject):
             self.rtems_bsps = ["rv64imafdc_medany"]
 
     def _run_waf(self, *args, **kwargs):
-        cmdline = [self.sourceDir / "waf", "-t", self.sourceDir, "-o", self.buildDir] + list(args)
+        cmdline = [self.source_dir / "waf", "-t", self.source_dir, "-o", self.build_dir] + list(args)
         if self.config.verbose:
             cmdline.append("-v")
-        return self.run_cmd(cmdline, cwd=self.sourceDir, **kwargs)
+        return self.run_cmd(cmdline, cwd=self.source_dir, **kwargs)
 
     def configure(self, **kwargs):
-        waf_run = self._run_waf("bsp_defaults", "--rtems-bsps="+",".join(self.rtems_bsps),  "--rtems-compiler=clang",
-            captureOutput=True)
+        waf_run = self._run_waf("bsp_defaults", "--rtems-bsps=" + ",".join(self.rtems_bsps), "--rtems-compiler=clang",
+                                capture_output=True)
 
         # waf configure reads config.ini by default to read RTEMS flags from
-        self.writeFile(self.sourceDir / "config.ini", str(waf_run.stdout, 'utf-8'), overwrite=True)
+        self.write_file(self.source_dir / "config.ini", str(waf_run.stdout, 'utf-8'), overwrite=True)
         self._run_waf("configure", "--prefix", self.destdir)
 
     def compile(self, **kwargs):
-        self._run_waf("build", self.config.makeJFlag)
+        self._run_waf("build", self.config.make_j_flag)
 
     def install(self, **kwargs):
         self._run_waf("install")
 
     def process(self):
-        with setEnv(PATH=str(self.sdk_bindir) + ":" + os.getenv("PATH", ""),
-                    CFLAGS="--sysroot=" + str(self.sdk_sysroot),
-                    LDFLAGS="--sysroot=" + str(self.sdk_sysroot)):
+        with set_env(PATH=str(self.sdk_bindir) + ":" + os.getenv("PATH", ""),
+                     CFLAGS="--sysroot=" + str(self.sdk_sysroot),
+                     LDFLAGS="--sysroot=" + str(self.sdk_sysroot)):
             super().process()

@@ -33,8 +33,7 @@ from pathlib import Path
 
 from .chericonfig import CheriConfig
 from .loader import ConfigLoaderBase, JsonAndCommandLineConfigLoader
-from .compilation_targets import CompilationTargets
-from ..utils import defaultNumberOfMakeJobs
+from ..utils import default_make_jobs_count
 
 
 class CheribuildAction(Enum):
@@ -60,81 +59,78 @@ class CheribuildAction(Enum):
 
 
 class DefaultCheriConfig(CheriConfig):
-    def __init__(self, loader: ConfigLoaderBase, availableTargets: list):
+    def __init__(self, loader: ConfigLoaderBase, available_targets: list):
         super().__init__(loader, action_class=CheribuildAction)
         self.default_action = CheribuildAction.BUILD
         assert isinstance(loader, JsonAndCommandLineConfigLoader)
         # The run mode:
-        self.getConfigOption = loader.addOption("get-config-option", type=str, metavar="KEY", group=loader.actionGroup,
-                                                help="Print the value of config option KEY and exit")
+        self.get_config_option = loader.add_option("get-config-option", type=str, metavar="KEY",
+                                                   group=loader.action_group,
+                                                   help="Print the value of config option KEY and exit")
         # boolean flags
         self.quiet = loader.add_bool_option("quiet", "q", help="Don't show stdout of the commands that are executed")
         self.verbose = loader.add_bool_option("verbose", "v", help="Print all commmands that are executed")
         self.clean = loader.add_bool_option("clean", "c", help="Remove the build directory before build")
         self.force = loader.add_bool_option("force", "f", help="Don't prompt for user input but use the default action")
-        self.write_logfile = loader.add_bool_option("logfile", help="Don't write a logfile for the build steps", default=False)
-        self.skipUpdate = loader.add_bool_option("skip-update", help="Skip the git pull step")
-        self.skipClone = False
+        self.write_logfile = loader.add_bool_option("logfile", help="Don't write a logfile for the build steps",
+                                                    default=False)
+        self.skip_update = loader.add_bool_option("skip-update", help="Skip the git pull step")
+        self.skip_clone = False
         self.force_update = loader.add_bool_option("force-update", help="Always update (with autostash) even if there "
-                                                                      "are uncommitted changes")
-        self.skipConfigure = loader.add_bool_option("skip-configure", help="Skip the configure step",
-                                                  group=loader.configureGroup)
-        self.forceConfigure = loader.add_bool_option("reconfigure", "-force-configure",
-                                                   group=loader.configureGroup,
-                                                   help="Always run the configure step, even for CMake projects with a "
-                                                        "valid cache.")
-        self.includeDependencies = loader.add_bool_option("include-dependencies", "d",
-            help="Also build the dependencies of targets passed on the command line. Targets passed on thecommand "
+                                                                        "are uncommitted changes")
+        self.skip_configure = loader.add_bool_option("skip-configure", help="Skip the configure step",
+                                                     group=loader.configure_group)
+        self.force_configure = loader.add_bool_option("reconfigure", "-force-configure",
+                                                      group=loader.configure_group,
+                                                      help="Always run the configure step, even for CMake projects "
+                                                           "with a valid cache.")
+        self.include_dependencies = loader.add_bool_option(
+            "include-dependencies", "d",
+            help="Also build the dependencies of targets passed on the command line. Targets passed on the command "
                  "line will be reordered and processed in an order that ensures dependencies are built before the "
                  "real target. (run --list-targets for more information). By default this does not build toolchain "
                  "targets such as LLVM. Pass --include-toolchain-dependencies to also build those.")
-        self.include_toolchain_dependencies = loader.add_bool_option("include-toolchain-dependencies", default=True,
+        self.include_toolchain_dependencies = loader.add_bool_option(
+            "include-toolchain-dependencies", default=True,
             help="Include toolchain targets such as LLVM and QEMU when --include-dependencies is set.")
 
-        self.copy_compilation_db_to_source_dir = loader.addCommandLineOnlyBoolOption("compilation-db-in-source-dir",
-            help="Generate a compile_commands.json and also copy it to the source directory")
+        self.copy_compilation_db_to_source_dir = loader.add_commandline_only_bool_option("compilation-db-in-source-dir",
+                                                                                         help="Generate a "
+                                                                                              "compile_commands.json "
+                                                                                              "and also copy it to "
+                                                                                              "the source directory")
 
-        self.crossCompileForMips = loader.add_bool_option("cross-compile-for-mips", "-xmips", group=loader.crossCompileGroup,
-                                                        help="Make cross compile projects target MIPS hybrid ABI "
-                                                             "instead of CheriABI")
-        self.crossCompileForHost = loader.add_bool_option("cross-compile-for-host", "-xhost", group=loader.crossCompileGroup,
-                                                        help="Make cross compile projects target the host system and "
-                                                             "use cheri clang to compile (tests that we didn't break x86)")
+        self.make_without_nice = loader.add_bool_option("make-without-nice", help="Run make/ninja without nice(1)")
 
-        self.makeWithoutNice = loader.add_bool_option("make-without-nice", help="Run make/ninja without nice(1)")
-
-        self.makeJobs = loader.addOption("make-jobs", "j", type=int, default=defaultNumberOfMakeJobs(),
-                                         help="Number of jobs to use for compiling")
+        self.make_jobs = loader.add_option("make-jobs", "j", type=int, default=default_make_jobs_count(),
+                                           help="Number of jobs to use for compiling")
 
         # configurable paths
-        self.sourceRoot = loader.add_path_option("source-root",
-            default=Path(os.path.expanduser("~/cheri")), group=loader.pathGroup,
-            help="The directory to store all sources")
-        self.outputRoot = loader.add_path_option("output-root",
-            default=lambda p, cls: (p.sourceRoot / "output"), group=loader.pathGroup,
-            help="The directory to store all output (default: '<SOURCE_ROOT>/output')")
-        self.buildRoot = loader.add_path_option("build-root",
-            default=lambda p, cls: (p.sourceRoot / "build"), group=loader.pathGroup,
-            help="The directory for all the builds (default: '<SOURCE_ROOT>/build')")
-        self.toolsRoot = loader.add_path_option("tools-root",
-            default=lambda p, cls: p.outputRoot, group=loader.pathGroup,
-            help="The directory to find sdk and bootstrap tools (default: '<OUTPUT_ROOT>')")
-        loader.finalizeOptions(availableTargets)
+        self.source_root = loader.add_path_option("source-root",
+                                                  default=Path(os.path.expanduser("~/cheri")), group=loader.path_group,
+                                                  help="The directory to store all sources")
+        self.output_root = loader.add_path_option("output-root",
+                                                  default=lambda p, cls: (p.source_root / "output"),
+                                                  group=loader.path_group,
+                                                  help="The directory to store all output (default: "
+                                                       "'<SOURCE_ROOT>/output')")
+        self.build_root = loader.add_path_option("build-root",
+                                                 default=lambda p, cls: (p.source_root / "build"),
+                                                 group=loader.path_group,
+                                                 help="The directory for all the builds (default: "
+                                                      "'<SOURCE_ROOT>/build')")
+        self.tools_root = loader.add_path_option("tools-root",
+                                                 default=lambda p, cls: p.output_root, group=loader.path_group,
+                                                 help="The directory to find sdk and bootstrap tools (default: "
+                                                      "'<OUTPUT_ROOT>')")
+        loader.finalize_options(available_targets)
 
     def load(self):
         super().load()
-        if self.crossCompileForHost:
-            assert not self.crossCompileForMips
-            self.preferred_xtarget = CompilationTargets.NATIVE
-        elif self.crossCompileForMips:
-            assert not self.crossCompileForHost
-            self.preferred_xtarget = CompilationTargets.CHERIBSD_MIPS_HYBRID
-        else:
-            self.preferred_xtarget = None
+        self.preferred_xtarget = None
         # now set some generic derived config options
-        self.cheri_sdk_dir = self.toolsRoot / self.cheri_sdk_directory_name  # qemu and binutils (and llvm/clang)
-        self.otherToolsDir = self.toolsRoot / "bootstrap"
-        self.cheribsd_image_root = self.outputRoot  # TODO: allow this to be different?
-        self._initializeDerivedPaths()
+        self.cheri_sdk_dir = self.tools_root / self.cheri_sdk_directory_name  # qemu and binutils (and llvm/clang)
+        self.other_tools_dir = self.tools_root / "bootstrap"
+        self.cheribsd_image_root = self.output_root  # TODO: allow this to be different?
 
         assert self._ensure_required_properties_set()

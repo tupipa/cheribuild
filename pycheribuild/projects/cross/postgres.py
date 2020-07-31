@@ -43,7 +43,8 @@ class BuildPostgres(CrossCompileAutotoolsProject):
     # TODO: only use mxcaptable for some files
     needs_mxcaptable_static = True  # both are slightly over the limit
     needs_mxcaptable_dynamic = True  # both are slightly over the limit
-    # warning: added 31332 entries to .cap_table but current maximum is 16384; try recompiling non-performance critical source files with -mxcaptable
+    # warning: added 31332 entries to .cap_table but current maximum is 16384; try recompiling non-performance
+    # critical source files with -mxcaptable
     native_install_dir = DefaultInstallDir.IN_BUILD_DIRECTORY
     cross_install_dir = DefaultInstallDir.ROOTFS
 
@@ -52,7 +53,7 @@ class BuildPostgres(CrossCompileAutotoolsProject):
         if self.enable_assertions:
             self.COMMON_FLAGS.append("-DUSE_ASSERT_CHECKING=1")
             # self.COMMON_FLAGS.append("-DLOCK_DEBUG=1")
-            self.configureArgs.append("--enable-cassert")
+            self.configure_args.append("--enable-cassert")
 
         self.common_warning_flags.extend(["-pedantic", "-Wno-gnu-statement-expression",
                                           "-Wno-flexible-array-extensions",  # TODO: could this cause errors?
@@ -60,7 +61,8 @@ class BuildPostgres(CrossCompileAutotoolsProject):
         self.LDFLAGS.append("-pthread")
         if OSInfo.IS_FREEBSD and self.compiling_for_host():
             # Something werid is happending with the locale code (somehow not being built -FPIC?):
-            # /usr/local/llvm60/bin/ld: error: can't create dynamic relocation R_X86_64_PC32 against symbol: _CurrentRuneLocale in readonly segment; recompile object files with -fPIC
+            # /usr/local/llvm60/bin/ld: error: can't create dynamic relocation R_X86_64_PC32 against symbol:
+            # _CurrentRuneLocale in readonly segment; recompile object files with -fPIC
             # >>> defined in /lib/libc.so.7
             # >>> referenced by pgstrcasecmp.c:37 (/exports/users/alr48/sources/postgres/src/port/pgstrcasecmp.c:37)
             # >>>               pgstrcasecmp.o:(pg_strcasecmp) in archive ../../src/port/libpgport.a
@@ -72,39 +74,40 @@ class BuildPostgres(CrossCompileAutotoolsProject):
             # postgres can't find readline on FreeBSD:
             self.COMMON_FLAGS.append("-I/usr/include/edit")
         if not self.compiling_for_host():
-            self.configureEnvironment["AR"] = str(self.sdk_bindir / "llvm-ar")
+            self.configure_environment["AR"] = str(self.sdk_bindir / "llvm-ar")
             # tell postgres configure that %zu works in printf()
-            self.configureEnvironment["PRINTF_SIZE_T_SUPPORT"] = "yes"
+            self.configure_environment["PRINTF_SIZE_T_SUPPORT"] = "yes"
             # currently we can only build static:
             # self.LDFLAGS.append("-static")
             # self.COMMON_FLAGS.append("-static")  # adding it to LDFLAGS only doesn't seem to be enough
-            self.configureArgs.extend(["--without-libxml", "--without-readline", "--without-gssapi"])
+            self.configure_args.extend(["--without-libxml", "--without-readline", "--without-gssapi"])
         else:
-            self.configureArgs.extend(["--with-libxml", "--with-readline", "--without-gssapi"])
+            self.configure_args.extend(["--with-libxml", "--with-readline", "--without-gssapi"])
 
         if self.force_static_linkage:
             self.add_configure_env_arg("LDFLAGS_EX", "-static")
             self.COMMON_FLAGS.append("-DDISABLE_LOADABLE_MODULES=1")
         if self.should_include_debug_info:
-            self.configureArgs.append("--enable-debug")
+            self.configure_args.append("--enable-debug")
         else:
-            self.configureArgs.append("--disable-debug")
+            self.configure_args.append("--disable-debug")
 
     def install(self, **kwargs):
         super().install()
         install_tests_args = self.make_args.copy()
         install_tests_args.add_flags("-C", "src/test/regress")
-        self.runMakeInstall(target="install-tests", options=install_tests_args)
+        self.run_make_install(target="install-tests", options=install_tests_args)
         # install the benchmark script
         for benchname in ("postgres-benchmark.sh", "postgres-initdb-benchmark.sh"):
-            benchmark = self.readFile(self.sourceDir / benchname)
-            if self.installPrefix:
-                pg_root = str(self.installPrefix)
+            benchmark = self.read_file(self.source_dir / benchname)
+            if self.install_prefix:
+                pg_root = str(self.install_prefix)
             else:
-                pg_root = str(self.installDir)
+                pg_root = str(self.install_dir)
             benchmark = re.sub(r'POSTGRES_ROOT=".*"', "POSTGRES_ROOT=\"" + pg_root + "\"", benchmark)
-            self.writeFile(self.real_install_root_dir / benchname, benchmark, overwrite=True, mode=0o755)
-        self.installFile(self.sourceDir / "run-postgres-tests.sh", self.real_install_root_dir / "run-postgres-tests.sh")
+            self.write_file(self.real_install_root_dir / benchname, benchmark, overwrite=True, mode=0o755)
+        self.install_file(self.source_dir / "run-postgres-tests.sh",
+                          self.real_install_root_dir / "run-postgres-tests.sh")
 
     @property
     def default_ldflags(self):
@@ -117,20 +120,21 @@ class BuildPostgres(CrossCompileAutotoolsProject):
     def should_use_extra_c_compat_flags(self):
         return True
 
-    def needsConfigure(self):
-        return not (self.buildDir / "GNUmakefile").exists()
+    def needs_configure(self):
+        return not (self.build_dir / "GNUmakefile").exists()
 
     def run_tests(self):
         if self.compiling_for_host():
-            self.run_make("check", cwd=self.buildDir / "src/test/regress", stdout_filter=None)
-            # self.run_make("check", cwd=self.buildDir / "src/interfaces/ecpg/test", stdout_filter=None)
+            self.run_make("check", cwd=self.build_dir / "src/test/regress", stdout_filter=None)
+            # self.run_make("check", cwd=self.build_dir / "src/interfaces/ecpg/test", stdout_filter=None)
         else:
             locale_dir = self.rootfs_dir / "usr/share/locale"
             self.target_info.run_cheribsd_test_script("run_postgres_tests.py", "--smb-mount-directory",
-                                          str(self.installDir) + ":" + str(self.installPrefix),
-                                          "--locale-files-dir", locale_dir, mount_builddir=False,
-                                          # long running test -> speed up by using a kernel without invariants
-                                          use_benchmark_kernel_by_default=True)
+                                                      str(self.install_dir) + ":" + str(self.install_prefix),
+                                                      "--locale-files-dir", locale_dir, mount_builddir=False,
+                                                      # long running test -> speed up by using a kernel without
+                                                      # invariants
+                                                      use_benchmark_kernel_by_default=True)
 
     @classmethod
     def setup_config_options(cls, **kwargs):

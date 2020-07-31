@@ -31,7 +31,7 @@ import sys
 
 from .cross.bbl import BuildBBLNoPayload
 from .cross.cheribsd import BuildCheriBsdMfsKernel
-from .project import (AutotoolsProject, BuildType, commandline_to_str, DefaultInstallDir, GitRepository,
+from .project import (AutotoolsProject, BuildType, CheriConfig, commandline_to_str, DefaultInstallDir, GitRepository,
                       MakeCommandKind, SimpleProject)
 from ..config.compilation_targets import CompilationTargets
 
@@ -40,7 +40,7 @@ class BuildCheriSpike(AutotoolsProject):
     target = "spike"
     project_name = "spike"
     repository = GitRepository("https://github.com/CTSRD-CHERI/riscv-isa-sim",
-        default_branch="cheri", force_branch=True)
+                               default_branch="cheri", force_branch=True)
     native_install_dir = DefaultInstallDir.CHERI_SDK
     default_build_type = BuildType.RELEASE
     lto_by_default = True
@@ -54,33 +54,34 @@ class BuildCheriSpike(AutotoolsProject):
 
     def setup(self):
         super().setup()
-        self.configureArgs.append("--enable-cheri")
-        self.configureArgs.append("--disable-rvfi-dii")
+        self.configure_args.append("--enable-cheri")
+        self.configure_args.append("--disable-rvfi-dii")
         # We have to pass LDFLAGS as part of CC/CXX since the build system is dumb.
         common_flags = self.default_compiler_flags + self.default_ldflags
-        self.configureEnvironment["CC"] = commandline_to_str([self.CC] + common_flags + self.CFLAGS)
-        self.configureEnvironment["CXX"] = commandline_to_str([self.CXX] + common_flags + self.CXXFLAGS)
+        self.configure_environment["CC"] = commandline_to_str([self.CC] + common_flags + self.CFLAGS)
+        self.configure_environment["CXX"] = commandline_to_str([self.CXX] + common_flags + self.CXXFLAGS)
 
     @classmethod
     def get_simulator_binary(cls, caller):
-        return cls.getInstallDir(caller, cross_target=CompilationTargets.NATIVE) / "bin/spike"
+        return cls.get_install_dir(caller, cross_target=CompilationTargets.NATIVE) / "bin/spike"
 
 
 class RunCheriSpikeBase(SimpleProject):
-    doNotAddToTargets = True
-    _bbl_class = BuildBBLNoPayload.get_class_for_target(CompilationTargets.BAREMETAL_NEWLIB_RISCV64_PURECAP)
+    do_not_add_to_targets = True
+    _bbl_xtarget = CompilationTargets.BAREMETAL_NEWLIB_RISCV64_PURECAP
+    _bbl_class = BuildBBLNoPayload.get_class_for_target(_bbl_xtarget)
     _source_class = None
 
     @classmethod
-    def dependencies(cls, config):
+    def dependencies(cls, _: CheriConfig):
         return [cls._source_class.target, cls._bbl_class.target, BuildCheriSpike.target]
 
     def process(self):
         kernel = self._source_class.get_installed_kernel_path(self)
+        # We always want output even with --quiet
         self.run_cmd([BuildCheriSpike.get_simulator_binary(self), "+payload=" + str(kernel),
-                      self._bbl_class.get_installed_kernel_path(self,
-                          cross_target=CompilationTargets.BAREMETAL_NEWLIB_RISCV64_PURECAP)], give_tty_control=True,
-            stdout=sys.stdout, stderr=sys.stderr)  # We always want output even with --quiet
+                      self._bbl_class.get_installed_kernel_path(self, cross_target=self._bbl_xtarget)],
+                     give_tty_control=True, stdout=sys.stdout, stderr=sys.stderr)
 
 
 class RunCheriBsdSpike(RunCheriSpikeBase):

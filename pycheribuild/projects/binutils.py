@@ -30,9 +30,10 @@
 import os
 import shutil
 import typing
+from pathlib import Path
 
-from .project import AutotoolsProject, DefaultInstallDir, GitRepository, Path
-from ..utils import getCompilerInfo
+from .project import AutotoolsProject, DefaultInstallDir, GitRepository
+from ..utils import get_compiler_info
 
 
 class BuildGnuBinutils(AutotoolsProject):
@@ -45,8 +46,8 @@ class BuildGnuBinutils(AutotoolsProject):
     @classmethod
     def setup_config_options(cls, **kwargs):
         super().setup_config_options()
-        cls.fullInstall = cls.add_bool_option("install-all-tools", help="Whether to install all binutils tools instead"
-                                                                      "of only as, ld and objdump")
+        cls.full_install = cls.add_bool_option("install-all-tools", help="Whether to install all binutils tools instead"
+                                                                         "of only as, ld and objdump")
 
     def setup(self):
         super().setup()
@@ -68,7 +69,7 @@ class BuildGnuBinutils(AutotoolsProject):
         #    elf64ltsmip_fbsd
         #    elf32btsmipn32_fbsd
         #    elf32ltsmipn32_fbsd
-        self.configureArgs.extend([
+        self.configure_args.extend([
             # on cheri gcc -dumpmachine returns mips64-undermydesk-freebsd, however this is not accepted by BFD
             # if we just pass --target=mips64 this apparently defaults to mips64-unknown-elf on freebsd
             # and also on Linux, but let's be explicit in case it assumes ELF binaries to target linux
@@ -85,14 +86,14 @@ class BuildGnuBinutils(AutotoolsProject):
             "--disable-info",
             #  "--program-prefix=cheri-unknown-freebsd-",
             "MAKEINFO=missing",  # don't build docs, this will fail on recent Linux systems
-        ])
-        self.configureArgs.append("--disable-shared")
+            ])
+        self.configure_args.append("--disable-shared")
         # newer compilers will default to -std=c99 which will break binutils:
         cflags = "-std=gnu89 -O2"
-        info = getCompilerInfo(Path(os.getenv("CC", shutil.which("cc"))))
+        info = get_compiler_info(Path(os.getenv("CC", shutil.which("cc"))))
         if info.compiler == "clang" or (info.compiler == "gcc" and info.version >= (4, 6, 0)):
             cflags += " -Wno-unused"
-        self.configureEnvironment["CFLAGS"] = cflags
+        self.configure_environment["CFLAGS"] = cflags
 
     def compile(self, **kwargs):
         self.run_make("all-ld", logfile_name="build")
@@ -100,31 +101,31 @@ class BuildGnuBinutils(AutotoolsProject):
         self.run_make("all-binutils", logfile_name="build")
 
     def install(self, **kwargs):
-        bindir = self.installDir / "bin"
-        if not self.fullInstall:
+        bindir = self.install_dir / "bin"
+        if not self.full_install:
             # we don't want to install all programs, as the rest comes from elftoolchain
             self.run_make("install-gas", logfile_name="install", append_to_logfile=True, parallel=False)
-            self.deleteFile(bindir / "mips64-unknown-freebsd-ld")
+            self.delete_file(bindir / "mips64-unknown-freebsd-ld")
             self.run_make("install-ld", logfile_name="install", append_to_logfile=True, parallel=False)
             # we also need the linker scripts so this is not enough:
-            # self.installFile(self.buildDir / "ld/ld-new", bindir / "ld.bfd", force=True)
-            self.moveFile(bindir / "mips64-unknown-freebsd-ld", bindir / "mips64-unknown-freebsd-ld.bfd")
-            installedTools = ["as", "ld.bfd"]
+            # self.install_file(self.build_dir / "ld/ld-new", bindir / "ld.bfd", force=True)
+            self.move_file(bindir / "mips64-unknown-freebsd-ld", bindir / "mips64-unknown-freebsd-ld.bfd")
+            installed_tools = ["as", "ld.bfd"]
             # copy objdump from the build dir
-            self.installFile(self.buildDir / "binutils/objdump", bindir / "mips64-unknown-freebsd-objdump")
-            installedTools.append("objdump")
+            self.install_file(self.build_dir / "binutils/objdump", bindir / "mips64-unknown-freebsd-objdump")
+            installed_tools.append("objdump")
         else:
             super().install()
-            installedTools = "addr2line ranlib strip ar nm readelf as objcopy size c++filt objdump strings".split()
+            installed_tools = "addr2line ranlib strip ar nm readelf as objcopy size c++filt objdump strings".split()
             # create links for ld:
             self.create_triple_prefixed_symlinks(bindir / "ld.bfd")
-        for tool in installedTools:
-            prefixedName = "mips64-unknown-freebsd-" + tool
-            if not (bindir / prefixedName).is_file():
-                self.fatal("Binutils binary", prefixedName, "is missing!")
+        for tool in installed_tools:
+            prefixed_name = "mips64-unknown-freebsd-" + tool
+            if not (bindir / prefixed_name).is_file():
+                self.fatal("Binutils binary", prefixed_name, "is missing!")
             # create the right symlinks to the tool (ld -> mips64-unknown-elf-ld, etc)
             # Also symlink cheri-unknown-freebsd-ld -> ld (and the other targets)
-            self.create_triple_prefixed_symlinks(bindir / prefixedName, tool_name=tool, create_unprefixed_link=True)
+            self.create_triple_prefixed_symlinks(bindir / prefixed_name, tool_name=tool, create_unprefixed_link=True)
 
     @property
     def triple_prefixes_for_binaries(self) -> typing.Iterable[str]:

@@ -37,21 +37,14 @@ import run_remote_lit_test
 from run_tests_common import *
 
 
-def setup_libunwind_env(qemu: boot_cheribsd.CheriBSDInstance, args: argparse.Namespace):
-    # Copy the libunwind library to both MIPS and CHERI library dirs so that it is picked up
-    # Do this instead of setting LD_LIBRARY_PATH to use only the libraries that we actually need
-    boot_cheribsd.checked_run_cheribsd_command(qemu, "ln -sfv /build/lib/libunwind.so* /usr/lib/")
-    boot_cheribsd.checked_run_cheribsd_command(qemu, "ln -sfv /build/lib/libunwind.so* /usr/libcheri/")
-    # We also need libdl from the sysroot:
-    boot_cheribsd.checked_run_cheribsd_command(qemu,
-                                               "ln -sfv /sysroot/usr/lib/libcxxrt.so* /sysroot/usr/lib/libdl.so* "
-                                               "/usr/lib/")
-    boot_cheribsd.checked_run_cheribsd_command(qemu,
-                                               "ln -sfv /sysroot/usr/libcheri/libcxxrt.so*  "
-                                               "/sysroot/usr/libcheri/libdl.so* /usr/libcheri/")
+def setup_libunwind_env(qemu: boot_cheribsd.CheriBSDInstance, _: argparse.Namespace):
+    # We also need libdl and libcxxrt from the sysroot:
+    libdir = "libcheri" if qemu.xtarget.is_cheri_purecap() else "lib64"
+    qemu.checked_run("ln -sfv /build/lib/libunwind.so* /usr/{libdir}/".format(libdir=libdir))
+    qemu.checked_run("ln -sfv /sysroot/usr/{libdir}/libcxxrt.so* /sysroot/usr/{libdir}/libdl.so* /usr/{libdir}/".format(
+        libdir=libdir))
     # Add a fake libgcc_s link to libunwind (this works now that we build libunwind with version info)
-    boot_cheribsd.checked_run_cheribsd_command(qemu, "ln -sfv /usr/lib/libunwind.so /usr/lib/libgcc_s.so.1")
-    boot_cheribsd.checked_run_cheribsd_command(qemu, "ln -sfv /usr/libcheri/libunwind.so /usr/libcheri/libgcc_s.so.1")
+    qemu.checked_run("ln -sfv /usr/{libdir}/libunwind.so /usr/{libdir}/libgcc_s.so.1".format(libdir=libdir))
 
 
 def run_libunwind_tests(qemu: boot_cheribsd.CheriBSDInstance, args: argparse.Namespace):
@@ -75,21 +68,22 @@ def run_libunwind_tests(qemu: boot_cheribsd.CheriBSDInstance, args: argparse.Nam
 
 
 def add_cmdline_args(parser: argparse.ArgumentParser):
-    parser.add_argument("--lit-debug-output", action="store_true")
-    parser.add_argument("--llvm-lit-path")
-    parser.add_argument("--xunit-output", default="qemu-libunwind-test-results.xml")
+    # Only 10 tests, don't do the multiprocessing here
+    run_remote_lit_test.add_common_cmdline_args(parser, default_xunit_output="qemu-libunwind-test-results.xml",
+                                                allow_multiprocessing=False)
 
 
-def set_cmdline_args(args: argparse.Namespace):
+def adjust_cmdline_args(args: argparse.Namespace):
     # We don't support parallel jobs but are reusing libcxx infrastructure -> set the expected vars
     args.internal_shard = None
     args.parallel_jobs = None
+    run_remote_lit_test.adjust_common_cmdline_args(args)
 
 
 if __name__ == '__main__':
     try:
         run_tests_main(test_function=run_libunwind_tests, need_ssh=True,  # we need ssh running to execute the tests
-                       argparse_setup_callback=add_cmdline_args, argparse_adjust_args_callback=set_cmdline_args,
+                       argparse_setup_callback=add_cmdline_args, argparse_adjust_args_callback=adjust_cmdline_args,
                        should_mount_sysroot=True, should_mount_builddir=True, test_setup_function=setup_libunwind_env)
     finally:
         print("Finished running ", " ".join(sys.argv))

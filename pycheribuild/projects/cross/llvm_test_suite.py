@@ -27,9 +27,10 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
+from pathlib import Path
 
 from .crosscompileproject import (BuildType, CompilationTargets, CrossCompileCMakeProject, DefaultInstallDir,
-                                  GitRepository, Path)
+                                  GitRepository)
 from ..llvm import BuildCheriLLVM
 from ...config.loader import ComputedDefaultValue
 
@@ -39,15 +40,15 @@ class BuildLLVMTestSuite(CrossCompileCMakeProject):
     dependencies = ["llvm-native"]
     default_build_type = BuildType.DEBUG
     project_name = "llvm-test-suite"
-    defaultSourceDir = ComputedDefaultValue(
-        function=lambda config, project: Path(config.sourceRoot / "llvm-test-suite"),
+    default_source_dir = ComputedDefaultValue(
+        function=lambda config, project: Path(config.source_root / "llvm-test-suite"),
         as_string="$SOURCE_ROOT/llvm-test-suite")
     default_install_dir = DefaultInstallDir.DO_NOT_INSTALL
 
     def _find_in_sdk_or_llvm_build_dir(self, name) -> Path:
-        if (BuildCheriLLVM.getBuildDir(self, cross_target=CompilationTargets.NATIVE) / "bin" / name).exists():
-            return BuildCheriLLVM.getBuildDir(self, cross_target=CompilationTargets.NATIVE) / "bin" / name
-        return BuildCheriLLVM.getInstallDir(self, cross_target=CompilationTargets.NATIVE) / "bin" / name
+        if (BuildCheriLLVM.get_build_dir(self, cross_target=CompilationTargets.NATIVE) / "bin" / name).exists():
+            return BuildCheriLLVM.get_build_dir(self, cross_target=CompilationTargets.NATIVE) / "bin" / name
+        return BuildCheriLLVM.get_install_dir(self, cross_target=CompilationTargets.NATIVE) / "bin" / name
 
     def __init__(self, config):
         super().__init__(config)
@@ -55,10 +56,11 @@ class BuildLLVMTestSuite(CrossCompileCMakeProject):
             TEST_SUITE_LLVM_SIZE=self._find_in_sdk_or_llvm_build_dir("llvm-size"),
             TEST_SUITE_LLVM_PROFDATA=self._find_in_sdk_or_llvm_build_dir("llvm-profdata"),
             TEST_SUITE_LIT=self._find_in_sdk_or_llvm_build_dir("llvm-lit")
-        )
+            )
         # TODO: fix these issues
         self.cross_warning_flags += ["-Wno-error=format", "-Werror=cheri-prototypes"]
         if not self.compiling_for_host():
             self.add_cmake_options(TEST_SUITE_HOST_CC="/usr/bin/cc")
             # we want to link against libc++ not libstdc++ (and for some reason we need to specify libgcc_eh too
             self.add_cmake_options(TEST_SUITE_CXX_LIBRARY="-lc++;-lgcc_eh")
+            self.add_cmake_options(BENCHMARK_USE_LIBCXX=True)

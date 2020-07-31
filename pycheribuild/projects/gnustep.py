@@ -43,7 +43,7 @@ class BuildLibObjC2(CMakeProject):
 
     def __init__(self, config: CheriConfig):
         super().__init__(config)
-        self.configureArgs.extend([
+        self.configure_args.extend([
             "-DCMAKE_ASM_COMPILER=clang",
             "-DCMAKE_ASM_COMPILER_ID=Clang",  # For some reason CMake doesn't detect the ASM compiler ID for clang
             "-DCMAKE_ASM_FLAGS=-c",  # required according to docs when using clang as ASM compiler
@@ -52,41 +52,42 @@ class BuildLibObjC2(CMakeProject):
             # Don't install in the location that gnustep-config says, it might be a directory that is not writable by
             # the current user:
             "-DGNUSTEP_INSTALL_TYPE=NONE",
-        ])
+            ])
         # TODO: require libdispatch?
         self.add_required_system_tool("clang")
         self.add_required_system_tool("clang++")
 
 
+# noinspection PyPep8Naming
 class BuildGnuStep_Make(AutotoolsProject):
     repository = GitRepository("https://github.com/gnustep/tools-make.git")
     native_install_dir = DefaultInstallDir.BOOTSTRAP_TOOLS
 
     def __init__(self, config: CheriConfig):
         super().__init__(config)
-        self.configureArgs.extend([
+        self.configure_args.extend([
             "--with-layout=fhs",  # more traditional file system layout
             "--with-library-combo=ng-gnu-gnu",  # use the new libobjc2 that supports ARC
             "--enable-objc-nonfragile-abi",  # not sure if required but given in install guide
             "CC=" + str(self.CC),
             "CXX=" + str(self.CXX),
-            "LDFLAGS=-Wl,-rpath," + str(self.installDir / "lib")  # add rpath, otherwise everything breaks
-        ])
+            "LDFLAGS=-Wl,-rpath," + str(self.install_dir / "lib")  # add rpath, otherwise everything breaks
+            ])
 
 
 # FIXME: do we need to source Makefiles/GNUstep.sh before building?
 class GnuStepModule(AutotoolsProject):
-    doNotAddToTargets = True
+    do_not_add_to_targets = True
     native_install_dir = DefaultInstallDir.BOOTSTRAP_TOOLS
     build_in_source_dir = True  # out of source builds don't seem to work!
 
-    def __init__(self, config: CheriConfig, moduleName: str):
-        self.repository = GitRepository("https://github.com/gnustep/libs-" + moduleName + ".git")
+    def __init__(self, config: CheriConfig, module_name: str):
+        self.repository = GitRepository("https://github.com/gnustep/libs-" + module_name + ".git")
         super().__init__(config)
-        self._addRequiredPkgConfig("gnutls")
+        self.add_required_pkg_config("gnutls")
         # Ubuntu puts libtiff-4 is in libtiff5-dev...
-        self._addRequiredPkgConfig("libtiff-4", apt="libtiff5-dev")
-        self._addRequiredPkgConfig("freetype2", apt="libfreetype6-dev")
+        self.add_required_pkg_config("libtiff-4", apt="libtiff5-dev")
+        self.add_required_pkg_config("freetype2", apt="libfreetype6-dev")
 
     def configure(self):
         if not shutil.which("gnustep-config"):
@@ -94,9 +95,10 @@ class GnuStepModule(AutotoolsProject):
             gnustep_libdir = Path("/invalid/path")
         else:
             gnustep_libdir = self.run_cmd("gnustep-config", "--variable=GNUSTEP_SYSTEM_LIBRARIES",
-                captureOutput=True, print_verbose_only=True, runInPretendMode=True).stdout.strip().decode("utf-8")
+                                          capture_output=True, print_verbose_only=True,
+                                          run_in_pretend_mode=True).stdout.strip().decode("utf-8")
         # Just to confirm that we have set up the -rpath flag correctly
-        expected_libdir = self.installDir / "lib"
+        expected_libdir = self.install_dir / "lib"
         if not expected_libdir.is_dir():
             self.fatal("Expected gnustep libdir", expected_libdir, "doesn't exist")
         if not Path(gnustep_libdir).is_dir():
@@ -106,25 +108,27 @@ class GnuStepModule(AutotoolsProject):
 
         # print(coloured(AnsiColour.green, "LDFLAGS=-L" + gnustep_libdir))
         # TODO: what about spaces??
-        # self.configureArgs.append("LDFLAGS=-L" + gnustep_libdir + " -Wl,-rpath," + gnustep_libdir)
+        # self.configure_args.append("LDFLAGS=-L" + gnustep_libdir + " -Wl,-rpath," + gnustep_libdir)
         super().configure()
 
 
+# noinspection PyPep8Naming
 class BuildGnuStep_Base(GnuStepModule):
-    doNotAddToTargets = False  # Even though it ends in Base this is not a Base class
+    do_not_add_to_targets = False  # Even though it ends in Base this is not a Base class
 
     def __init__(self, config: CheriConfig):
-        super().__init__(config, moduleName="base")
-        self.configureArgs.extend([
+        super().__init__(config, module_name="base")
+        self.configure_args.extend([
             "--disable-mixedabi",
             # TODO: "--enable-libdispatch",
-            # "--with-config-file=" + str(self.installDir / "etc/GNUStep/GNUStep.conf")
-        ])
+            # "--with-config-file=" + str(self.install_dir / "etc/GNUStep/GNUStep.conf")
+            ])
 
 
+# noinspection PyPep8Naming
 class BuildGnuStep_Gui(GnuStepModule):
     def __init__(self, config: CheriConfig):
-        super().__init__(config, moduleName="gui")
+        super().__init__(config, module_name="gui")
 
     def check_system_dependencies(self):
         # TODO check that libjpeg62-devel is not installed on opensuse, must use libjpeg8-devel
@@ -132,10 +136,11 @@ class BuildGnuStep_Gui(GnuStepModule):
         super().check_system_dependencies()
 
 
+# noinspection PyPep8Naming
 class BuildGnuStep_Back(GnuStepModule):
     def __init__(self, config: CheriConfig):
-        super().__init__(config, moduleName="back")
-        self.configureArgs.append("--enable-graphics=cairo")
+        super().__init__(config, module_name="back")
+        self.configure_args.append("--enable-graphics=cairo")
 
 
 class BuildGnuStep(TargetAliasWithDependencies):

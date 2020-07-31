@@ -27,14 +27,15 @@
 # LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
+from pathlib import Path
 
-from .project import CheriConfig, CrossCompileTarget, DefaultInstallDir, GitRepository, Path, Project
+from .project import CheriConfig, CrossCompileTarget, DefaultInstallDir, GitRepository, Project
 from ..utils import ThreadJoiner
 
 
 class BuildGo(Project):
-    githubBaseUrl = "https://github.com/CTSRD-CHERI/"
-    repository = GitRepository(githubBaseUrl + "freebsd-mips-go.git")
+    github_base_url = "https://github.com/CTSRD-CHERI/"
+    repository = GitRepository(github_base_url + "freebsd-mips-go.git")
     no_default_sysroot = None
     skip_cheri_symlinks = True
     native_install_dir = DefaultInstallDir.CHERI_SDK
@@ -50,50 +51,49 @@ class BuildGo(Project):
         super().__init__(config)
 
         # It does not seem possible to change this in the go build scripts (easily).
-        self.makeDir = self.sourceDir / "src"
-        self.binDir = self.sourceDir / "bin"
-        self.pkgDir = self.sourceDir / "pkg"
-        self.gorootDir = self.installDir / "go"
-        self.goCache = Path("~").expanduser() / ".cache" / "go-build"
+        self.make_dir = self.source_dir / "src"
+        self.bin_dir = self.source_dir / "bin"
+        self.pkg_dir = self.source_dir / "pkg"
+        self.goroot_dir = self.install_dir / "go"
+        self.go_cache = Path("~").expanduser() / ".cache" / "go-build"
 
     def build_dir_for_target(self, target: CrossCompileTarget):
-        return self.sourceDir / "pkg"
+        return self.source_dir / "pkg"
 
     def compile(self, **kwargs):
         env = {
-            "GOROOT_FINAL": self.gorootDir,
-        }
+            "GOROOT_FINAL": self.goroot_dir,
+            }
         if self.go_bootstrap:
             env["GOROOT_BOOTSTRAP"] = self.go_bootstrap
 
         cmd = "bash make.bash".split()
         if self.config.verbose:
             cmd += ["-v"]
-        self.run_cmd(cmd, cwd=self.makeDir, env=env)
+        self.run_cmd(cmd, cwd=self.make_dir, env=env)
 
     def clean(self) -> ThreadJoiner:
-        if (self.binDir / "go").exists():
-            self.run_cmd("bash clean.bash".split(), cwd=self.makeDir)
-        self.clean_directory(self.gorootDir)
+        if (self.bin_dir / "go").exists():
+            self.run_cmd("bash clean.bash".split(), cwd=self.make_dir)
+        self.clean_directory(self.goroot_dir)
         # Make sure we remove everything in the go cache, just in case
-        if self.goCache.exists():
-            self.clean_directory(self.goCache.resolve())
+        if self.go_cache.exists():
+            self.clean_directory(self.go_cache.resolve())
         joiner = super().clean()
         return joiner
 
     def install(self, **kwargs):
         # Move bin and pkg to goroot and link src dir
-        self.clean_directory(self.gorootDir, ensure_dir_exists=True)
+        self.clean_directory(self.goroot_dir, ensure_dir_exists=True)
 
-        self.copy_directory(self.binDir, self.gorootDir / "bin")
-        self.copy_directory(self.pkgDir, self.gorootDir / "pkg")
-        self.copy_directory(self.makeDir, self.gorootDir / "src")
+        self.copy_directory(self.bin_dir, self.goroot_dir / "bin")
+        self.copy_directory(self.pkg_dir, self.goroot_dir / "pkg")
+        self.copy_directory(self.make_dir, self.goroot_dir / "src")
 
         # Refresh the link in sdk/bin
-        self.deleteFile(self.installDir / "bin" / "go")
-        self.createSymlink(self.gorootDir / "bin" / "go", self.installDir / "bin" / "go")
+        self.delete_file(self.install_dir / "bin" / "go")
+        self.create_symlink(self.goroot_dir / "bin" / "go", self.install_dir / "bin" / "go")
 
     def run_tests(self):
         cmd = "bash run.bash --no-rebuild".split()
-        self.run_cmd(cmd, cwd=self.makeDir)
-
+        self.run_cmd(cmd, cwd=self.make_dir)

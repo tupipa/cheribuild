@@ -30,9 +30,9 @@
 import shlex
 from pathlib import Path
 
-from .project import (Project, GitRepository, DefaultInstallDir, MakeCommandKind, CheriConfig,
-                      ReuseOtherProjectRepository, BasicCompilationTargets)
-from ..utils import OSInfo, commandline_to_str
+from .project import (BasicCompilationTargets, CheriConfig, DefaultInstallDir, GitRepository, MakeCommandKind, Project,
+                      ReuseOtherProjectRepository)
+from ..utils import commandline_to_str, OSInfo
 
 
 class BuildBluespecCompiler(Project):
@@ -49,20 +49,21 @@ class BuildBluespecCompiler(Project):
         self.add_required_system_tool("cabal", apt="cabal-install", homebrew="cabal-install")
         for i in ("autoconf", "gperf", "bison", "flex"):
             self.add_required_system_tool(i, homebrew=i)
-        self.make_args.set(PREFIX=self.installDir)
+        self.make_args.set(PREFIX=self.install_dir)
 
     def compile(self, **kwargs):
         try:
             self.run_make("all")
-        except:
+        except Exception:
             self.info("Compilation failed. If it complains about missing packages try running:\n"
                       "\tcabal install regex-compat syb old-time split\n"
                       "If this doesn't fix the issue `v1-install` instead of `install` (e.g. macOS).")
             if OSInfo.IS_MAC:
-                self.info("Alternatively, try running:", self.sourceDir / ".github/workflows/install_dependencies_macos.sh")
-            elif OSInfo.isUbuntu():
                 self.info("Alternatively, try running:",
-                    self.sourceDir / ".github/workflows/install_dependencies_ubuntu.sh")
+                          self.source_dir / ".github/workflows/install_dependencies_macos.sh")
+            elif OSInfo.is_ubuntu():
+                self.info("Alternatively, try running:",
+                          self.source_dir / ".github/workflows/install_dependencies_ubuntu.sh")
             raise
 
 
@@ -72,7 +73,7 @@ class BuildCheriSim(Project):
     dependencies = ["bluespec-compiler"]
     repository = GitRepository("git@github.com:CTSRD-CHERI/cheri-cpu")
     native_install_dir = DefaultInstallDir.CHERI_SDK
-    build_in_source_dir = True      # Needs to build in the source dir
+    build_in_source_dir = True  # Needs to build in the source dir
     make_kind = MakeCommandKind.GnuMake
 
     def __init__(self, config: CheriConfig):
@@ -80,7 +81,7 @@ class BuildCheriSim(Project):
         # TODO: move this to project
         self.add_required_system_tool("dtc", apt="device-tree-compiler", homebrew="dtc")
         self.add_required_system_tool("bsc", cheribuild_target="bluespec-compiler")
-        self._addRequiredSystemHeader("mpfr.h", apt="libmpfr-dev")
+        self.add_required_system_header("mpfr.h", apt="libmpfr-dev")
         self.make_args.set(COP1="1" if self.build_fpu else "0")
         if self.build_cheri:
             if self.config.mips_cheri_bits == 128:
@@ -93,66 +94,70 @@ class BuildCheriSim(Project):
     def setup_config_options(cls, **kwargs):
         super().setup_config_options(**kwargs)
         cls.build_fpu = cls.add_bool_option("fpu", default=True, help="include the FPU code")
-        cls.build_cheri = cls.add_bool_option("cheri", default=True, help="include the CHERI code in the simulator. If false build BERI")
+        cls.build_cheri = cls.add_bool_option("cheri", default=True,
+                                              help="include the CHERI code in the simulator. If false build BERI")
 
     def clean(self):
-        self.run_make("clean", parallel=False, cwd=self.sourceDir / "cheri")
+        self.run_make("clean", parallel=False, cwd=self.source_dir / "cheri")
         return None
 
     def compile(self, **kwargs):
-        setup_sh = self.sourceDir / "cheri" / "setup.sh"
+        setup_sh = self.source_dir / "cheri" / "setup.sh"
         if self.config.fpga_custom_env_setup_script:
             setup_sh = self.config.fpga_custom_env_setup_script
         if not setup_sh.exists():
             self.fatal("Could not find setup.sh, please set --cheri-sim/source-directory or --fpga-env-setup-script")
         source_cmd = "source {setup_script}".format(setup_script=setup_sh)
-        self.run_shell_script(source_cmd + " && " + commandline_to_str(self.get_make_commandline("sim", parallel=False)),
-                            cwd=self.sourceDir / "cheri", shell="bash")
+        self.run_shell_script(
+            source_cmd + " && " + commandline_to_str(self.get_make_commandline("sim", parallel=False)),
+            cwd=self.source_dir / "cheri", shell="bash")
 
     def install(self, **kwargs):
         pass
 
     def process(self):
-        if OSInfo.isUbuntu() and not Path("/usr/lib/x86_64-linux-gnu/libgmp.so.3").exists():
+        if OSInfo.is_ubuntu() and not Path("/usr/lib/x86_64-linux-gnu/libgmp.so.3").exists():
             # BSC needs libgmp.so.3
             self.fatal("libgmp.so.3 is needed to run BSC",
-                       fixitHint="Creating a symlink to /usr/lib/x86_64-linux-gnu/libgmp.so.10 seems to work.\n"
-                                 "\t\tTry running `sudo ln -s libgmp.so.10 /usr/lib/x86_64-linux-gnu/libgmp.so.3`")
+                       fixit_hint="Creating a symlink to /usr/lib/x86_64-linux-gnu/libgmp.so.10 seems to work.\n"
+                                  "\t\tTry running `sudo ln -s libgmp.so.10 /usr/lib/x86_64-linux-gnu/libgmp.so.3`")
         super().process()
 
 
 class BuildBeriCtl(Project):
     target = "berictl"
-    repository = ReuseOtherProjectRepository(source_project=BuildCheriSim, subdirectory="cherilibs/tools/debug")
+    repository = ReuseOtherProjectRepository(source_project=BuildCheriSim, subdirectory="cherilibs/tools/debug",
+                                             do_update=True)
     native_install_dir = DefaultInstallDir.CHERI_SDK
-    build_in_source_dir = True      # Needs to build in the source dir
+    build_in_source_dir = True  # Needs to build in the source dir
     make_kind = MakeCommandKind.GnuMake
 
     def __init__(self, config: CheriConfig):
         super().__init__(config)
-        self.make_args.set(JTAG_ATLANTIC=1) # MUCH faster
+        self.make_args.set(JTAG_ATLANTIC=1)  # MUCH faster
 
     def clean(self):
-        self.run_make("clean", parallel=False, cwd=self.sourceDir)
+        self.run_make("clean", parallel=False, cwd=self.source_dir)
         return None
 
     def compile(self, **kwargs):
         sim_project = BuildCheriSim.get_instance(self, cross_target=BasicCompilationTargets.NATIVE)
-        setup_sh = sim_project.sourceDir / "cheri" / "setup.sh"
+        setup_sh = sim_project.source_dir / "cheri" / "setup.sh"
         if self.config.fpga_custom_env_setup_script:
             setup_sh = self.config.fpga_custom_env_setup_script
         if not setup_sh.exists():
             self.fatal("Could not find setup.sh")
-        self.run_shell_script("source {} && ".format(shlex.quote(str(setup_sh))) + commandline_to_str(self.get_make_commandline(None, parallel=False)),
-                            cwd=self.sourceDir, shell="bash")
+        self.run_shell_script("source {} && ".format(shlex.quote(str(setup_sh))) + commandline_to_str(
+            self.get_make_commandline(None, parallel=False)),
+                              cwd=self.source_dir, shell="bash")
 
     def install(self, **kwargs):
         pass
 
     def process(self):
-        if OSInfo.isUbuntu() and not Path("/usr/lib/x86_64-linux-gnu/libgmp.so.3").exists():
+        if OSInfo.is_ubuntu() and not Path("/usr/lib/x86_64-linux-gnu/libgmp.so.3").exists():
             # BSC needs libgmp.so.3
             self.fatal("libgmp.so.3 is needed to run BSC",
-                       fixitHint="Creating a symlink to /usr/lib/x86_64-linux-gnu/libgmp.so.10 seems to work.\n"
-                                 "\t\tTry running `sudo ln -s libgmp.so.10 /usr/lib/x86_64-linux-gnu/libgmp.so.3`")
+                       fixit_hint="Creating a symlink to /usr/lib/x86_64-linux-gnu/libgmp.so.10 seems to work.\n"
+                                  "\t\tTry running `sudo ln -s libgmp.so.10 /usr/lib/x86_64-linux-gnu/libgmp.so.3`")
         super().process()

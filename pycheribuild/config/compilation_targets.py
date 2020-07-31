@@ -35,8 +35,9 @@ from abc import ABCMeta, abstractmethod
 from pathlib import Path
 
 from .loader import ConfigOptionBase
-from .target_info import BasicCompilationTargets, CPUArchitecture, CrossCompileTarget, MipsFloatAbi, TargetInfo
-from ..utils import commandline_to_str, find_free_port, is_jenkins_build, SocketAndPort
+from .target_info import (AutoVarInit, BasicCompilationTargets, CPUArchitecture, CrossCompileTarget, MipsFloatAbi,
+                          TargetInfo)
+from ..utils import commandline_to_str, find_free_port, get_compiler_info, is_jenkins_build, SocketAndPort
 
 if typing.TYPE_CHECKING:
     from .chericonfig import CheriConfig  # no-combine
@@ -60,7 +61,8 @@ class _ClangBasedTargetInfo(TargetInfo, metaclass=ABCMeta):
         return self._sdk_root_dir
 
     @abstractmethod
-    def _get_sdk_root_dir_lazy(self) -> Path: ...
+    def _get_sdk_root_dir_lazy(self) -> Path:
+        ...
 
     @property
     def c_compiler(self) -> Path:
@@ -87,7 +89,7 @@ class _ClangBasedTargetInfo(TargetInfo, metaclass=ABCMeta):
         # noinspection PyProtectedMember
         if not self.project._setup_called:
             self.project.fatal("essential_compiler_and_linker_flags should not be called in __init__, use setup()!",
-                fatalWhenPretending=True)
+                               fatal_when_pretending=True)
         # However, when cross compiling we need at least -target=
         result = ["-target", self.target_triple, "-pipe"]
         # And usually also --sysroot
@@ -95,8 +97,17 @@ class _ClangBasedTargetInfo(TargetInfo, metaclass=ABCMeta):
             result.append("--sysroot=" + str(self.sysroot_dir))
             if self.project.is_nonexistent_or_empty_dir(self.sysroot_dir):
                 self.project.fatal("Project", self.project.target, "needs a sysroot, but", self.sysroot_dir,
-                    " is empty or does not exist.")
+                                   " is empty or does not exist.")
         result += ["-B" + str(self._compiler_dir)]
+
+        if self.project.auto_var_init != AutoVarInit.NONE:
+            compiler = get_compiler_info(self.c_compiler)
+            valid_clang_version = compiler.is_clang and compiler.version >= (8, 0)
+            # We should have at least 8.0.0 unless the user explicitly selected an incompatible clang
+            if valid_clang_version:
+                result += self.project.auto_var_init.clang_flags()
+            else:
+                self.project.fatal("Requested automatic variable initialization, but don't know how to for", compiler)
 
         if self.target.is_mips(include_purecap=True):
             result.append("-integrated-as")
@@ -115,8 +126,6 @@ class _ClangBasedTargetInfo(TargetInfo, metaclass=ABCMeta):
                     result.append("-mno-abicalls")
             else:
                 result.append(self.config.mips_float_abi.clang_float_flag())
-                # always use libc++
-                result.append("-stdlib=libc++")
 
             # CPU flags (currently always BERI):
             if self.is_cheribsd():
@@ -136,8 +145,6 @@ class _ClangBasedTargetInfo(TargetInfo, metaclass=ABCMeta):
                 if self.target.is_cheri_hybrid():
                     result.append("-cheri=" + self.config.mips_cheri_bits_str)
                     result.append("-mcpu=beri")
-                # always use libc++
-                result.append("-stdlib=libc++")
         elif self.target.is_riscv(include_purecap=True):
             assert self.target.cpu_architecture == CPUArchitecture.RISCV64
             # Use the insane RISC-V arch string to enable CHERI
@@ -200,7 +207,7 @@ class FreeBSDTargetInfo(_ClangBasedTargetInfo):
 
     def _get_sdk_root_dir_lazy(self):
         from ..projects.llvm import BuildUpstreamLLVM
-        return BuildUpstreamLLVM.getInstallDir(self.project, cross_target=CompilationTargets.NATIVE)
+        return BuildUpstreamLLVM.get_install_dir(self.project, cross_target=CompilationTargets.NATIVE)
 
     @property
     def sysroot_dir(self):
@@ -262,30 +269,28 @@ class CheriBSDTargetInfo(FreeBSDTargetInfo):
             return self.config.cheri_sdk_dir / "sysroot"
         return self.get_cheribsd_sysroot_path()
 
-    def get_cheribsd_sysroot_path(self, separate_cheri_sysroots=False) -> Path:
+    def get_cheribsd_sysroot_path(self) -> Path:
         """
-        :param separate_cheri_sysroots: If true will use a separate sysroot dir for purecap and hybrid sysroots. The
-        default behaviour is to use the hybrid sysroot for both purecap and hybrid applications.
         :return: The sysroot path
         """
         config = self.config
         if self.target.is_mips(include_purecap=True):
-            return self._sysroot_path(config.cheri_sdk_dir, separate_cheri_sysroots,
-                purecap_prefix="-purecap", hybrid_prefix="", nocheri_name="-mips")
+            return self._sysroot_path(config.cheri_sdk_dir, purecap_prefix="-purecap", hybrid_prefix="",
+                                      nocheri_name="-mips")
         elif self.target.is_riscv(include_purecap=True):
-            return self._sysroot_path(config.cheri_sdk_dir, separate_cheri_sysroots,
-                purecap_prefix="-riscv64-purecap", hybrid_prefix="-riscv64-hybrid", nocheri_name="-riscv64")
+            return self._sysroot_path(config.cheri_sdk_dir, purecap_prefix="-riscv64-purecap",
+                                      hybrid_prefix="-riscv64-hybrid", nocheri_name="-riscv64")
+        elif self.target.is_aarch64():
+            return config.cheri_sdk_dir / "sysroot-aarch64"
         elif self.target.is_x86_64():
-            return config.cheri_sdk_dir / "sysroot-x86_64"
+            return config.cheri_sdk_dir / "sysroot-amd64"
         else:
             assert False, "Invalid cross_compile_target: " + str(self.target)
 
-    def _sysroot_path(self, root_dir: Path, separate_cheri_sysroots: bool, *, purecap_prefix: str,
-                      hybrid_prefix: str, nocheri_name: str):
-        if self.target.is_cheri_hybrid() or (self.target.is_cheri_purecap() and not separate_cheri_sysroots):
+    def _sysroot_path(self, root_dir: Path, *, purecap_prefix: str, hybrid_prefix: str, nocheri_name: str):
+        if self.target.is_cheri_hybrid():
             return root_dir / ("sysroot" + hybrid_prefix + self.target.cheri_config_suffix(self.config))
         elif self.target.is_cheri_purecap():
-            assert separate_cheri_sysroots, "Logic error?"
             return root_dir / ("sysroot" + purecap_prefix + self.target.cheri_config_suffix(self.config))
         assert not self.target.is_hybrid_or_purecap_cheri()
         return root_dir / ("sysroot" + nocheri_name)
@@ -296,10 +301,9 @@ class CheriBSDTargetInfo(FreeBSDTargetInfo):
 
     def _get_mfs_root_kernel(self, use_benchmark_kernel: bool) -> Path:
         assert self.is_cheribsd(), "Other cases not handled yet"
-        kernel_xtarget = self._get_mfs_kernel_xtarget()
         from ..projects.cross.cheribsd import BuildCheriBsdMfsKernel
         if use_benchmark_kernel:
-            return BuildCheriBsdMfsKernel.get_installed_benchmark_kernel_path(self.project, cross_target=kernel_xtarget)
+            return BuildCheriBsdMfsKernel.get_installed_benchmark_kernel_path(self.project)
         else:
             return BuildCheriBsdMfsKernel.get_installed_kernel_path(self.project)
 
@@ -323,10 +327,9 @@ class CheriBSDTargetInfo(FreeBSDTargetInfo):
         # mount_sysroot may be needed for projects such as QtWebkit where the minimal image doesn't contain all the
         # necessary libraries
         xtarget = self.target
-        # Only supported for CheriBSD-MIPS,RISC-V and x86-64 right now:
-        if not xtarget.is_mips(include_purecap=True) and not xtarget.is_riscv(
-                include_purecap=True) and not xtarget.is_x86_64(include_purecap=True):
-            self.project.warning("CheriBSD test scripts currently only work for MIPS, RISC-V and x86-64")
+        if xtarget.cpu_architecture not in (CPUArchitecture.MIPS64, CPUArchitecture.RISCV64,
+                                            CPUArchitecture.X86_64, CPUArchitecture.AARCH64):
+            self.project.warning("CheriBSD test scripts currently only work for MIPS, RISC-V, AArch64 and x86-64")
             return
         if kernel_path is None and "--kernel" not in self.config.test_extra_args:
             # Use the benchmark kernel by default if the parameter is set and the user didn't pass
@@ -353,7 +356,7 @@ class CheriBSDTargetInfo(FreeBSDTargetInfo):
                     kernel_path = jenkins_kernel_path
                 else:
                     self.project.fatal("Could not find kernel image", kernel_path, "and jenkins path",
-                        jenkins_kernel_path, "is also missing")
+                                       jenkins_kernel_path, "is also missing")
         if kernel_path is None or not kernel_path.exists():
             self.project.fatal("Could not find kernel image", kernel_path)
         script = self.project.get_test_script_path(script_name)
@@ -364,23 +367,30 @@ class CheriBSDTargetInfo(FreeBSDTargetInfo):
         if "--kernel" not in self.config.test_extra_args:
             cmd.extend(["--kernel", kernel_path])
         if "--qemu-cmd" not in self.config.test_extra_args:
+            qemu_path = None
             if xtarget.is_riscv(include_purecap=True) or xtarget.is_mips(include_purecap=True):
                 from ..projects.build_qemu import BuildQEMU
                 qemu_path = BuildQEMU.qemu_cheri_binary(self.project)
                 if not qemu_path.exists():
                     self.project.fatal("QEMU binary", qemu_path, "doesn't exist")
+            else:
+                from ..qemu_utils import QemuOptions
+                binary_name = "qemu-system-" + QemuOptions(xtarget).qemu_arch_sufffix
+                if (self.config.qemu_bindir / binary_name).is_file():
+                    qemu_path = self.config.qemu_bindir / binary_name
+            if qemu_path is not None:
                 cmd.extend(["--qemu-cmd", qemu_path])
-        if mount_builddir and self.project.buildDir and "--build-dir" not in self.config.test_extra_args:
-            cmd.extend(["--build-dir", self.project.buildDir])
-        if mount_sourcedir and self.project.sourceDir and "--source-dir" not in self.config.test_extra_args:
-            cmd.extend(["--source-dir", self.project.sourceDir])
+        if mount_builddir and self.project.build_dir and "--build-dir" not in self.config.test_extra_args:
+            cmd.extend(["--build-dir", self.project.build_dir])
+        if mount_sourcedir and self.project.source_dir and "--source-dir" not in self.config.test_extra_args:
+            cmd.extend(["--source-dir", self.project.source_dir])
         if mount_sysroot and "--sysroot-dir" not in self.config.test_extra_args:
             cmd.extend(["--sysroot-dir", self.sysroot_dir])
         if mount_installdir:
             if "--install-destdir" not in self.config.test_extra_args:
                 cmd.extend(["--install-destdir", self.project.destdir])
             if "--install-prefix" not in self.config.test_extra_args:
-                cmd.extend(["--install-prefix", self.project.installPrefix])
+                cmd.extend(["--install-prefix", self.project.install_prefix])
         if disk_image_path and "--disk-image" not in self.config.test_extra_args:
             cmd.extend(["--disk-image", disk_image_path])
         if self.config.tests_interact:
@@ -419,11 +429,11 @@ class CheriBSDTargetInfo(FreeBSDTargetInfo):
 
         from ..projects.cherisim import BuildCheriSim, BuildBeriCtl
         sim_project = BuildCheriSim.get_instance(self.project, cross_target=CompilationTargets.NATIVE)
-        cherilibs_dir = Path(sim_project.sourceDir, "cherilibs")
-        cheri_dir = Path(sim_project.sourceDir, "cheri")
+        cherilibs_dir = Path(sim_project.source_dir, "cherilibs")
+        cheri_dir = Path(sim_project.source_dir, "cheri")
         if not cheri_dir.exists() or not cherilibs_dir.exists():
             self.project.fatal("cheri-cpu repository missing. Run `cheribuild.py berictl` or `git clone {} {}`".format(
-                sim_project.repository.url, sim_project.sourceDir))
+                sim_project.repository.url, sim_project.source_dir))
 
         qemu_ssh_socket = None  # type: typing.Optional[SocketAndPort]
 
@@ -438,7 +448,7 @@ class CheriBSDTargetInfo(FreeBSDTargetInfo):
                           "--qemu-ssh-port=" + str(qemu_ssh_socket.port)]
         else:
             basic_args = ["--berictl=" + str(
-                BuildBeriCtl.getBuildDir(self.project, cross_target=CompilationTargets.NATIVE) / "berictl")]
+                BuildBeriCtl.get_build_dir(self.project, cross_target=CompilationTargets.NATIVE) / "berictl")]
 
         if self.config.test_ssh_key.with_suffix("").exists():
             basic_args.extend(["--ssh-key", str(self.config.test_ssh_key.with_suffix(""))])
@@ -447,7 +457,7 @@ class CheriBSDTargetInfo(FreeBSDTargetInfo):
             runbench_args.append("--extra-input-files=" + str(self.config.benchmark_ld_preload))
             env_var = "LD_CHERI_PRELOAD" if self.target.is_cheri_hybrid() else "LD_PRELOAD"
             pre_cmd = "export {}={};".format(env_var,
-                shlex.quote("/tmp/benchdir/" + self.config.benchmark_ld_preload.name))
+                                             shlex.quote("/tmp/benchdir/" + self.config.benchmark_ld_preload.name))
             runbench_args.append("--pre-command=" + pre_cmd)
         if self.config.benchmark_fpga_extra_args:
             basic_args.extend(self.config.benchmark_fpga_extra_args)
@@ -466,7 +476,7 @@ class CheriBSDTargetInfo(FreeBSDTargetInfo):
             assert self.target.is_mips(include_purecap=True)
             basic_args.append("--jenkins-bitfile=cheri128")
             mfs_kernel = BuildCheriBsdMfsKernel.get_instance_for_cross_target(self._get_mfs_kernel_xtarget(),
-                self.config, caller=self.project)
+                                                                              self.config, caller=self.project)
             if self.config.benchmark_with_debug_kernel:
                 kernel_config = mfs_kernel.fpga_kernconf
             else:
@@ -490,8 +500,8 @@ set -x
 export PATH="$PATH:{cherilibs_dir}/tools:{cherilibs_dir}/tools/debug"
 exec {cheribuild_path}/beri-fpga-bsd-boot.py {basic_args} -vvvvv runbench {runbench_args}
             """.format(cheri_dir=cheri_dir, cherilibs_dir=cherilibs_dir,
-            runbench_args=commandline_to_str(runbench_args),
-            basic_args=commandline_to_str(basic_args), cheribuild_path=cheribuild_path)
+                       runbench_args=commandline_to_str(runbench_args),
+                       basic_args=commandline_to_str(basic_args), cheribuild_path=cheribuild_path)
         if self.config.benchmark_with_qemu:
             # Free the port that we reserved for QEMU before starting beri-fpga-bsd-boot.py
             qemu_ssh_socket.socket.close()
@@ -535,7 +545,8 @@ exec {cheribuild_path}/beri-fpga-bsd-boot.py {basic_args} -vvvvv runbench {runbe
 
     @property
     def _sysroot_libdir(self):
-        # We currently use the hybrid sysroot for purecap binaries -> libs are in usr/libcheri
+        # For purecap we can unconditionally use libcheri since it is either a real directory (hybrid sysroot) or
+        # a symlink to lib (since https://github.com/CTSRD-CHERI/cheribsd/pull/548).
         if self.target.is_cheri_purecap():
             return "libcheri"
         return "lib"
@@ -561,7 +572,7 @@ class CheriOSTargetInfo(CheriBSDTargetInfo):
 
     def _get_sdk_root_dir_lazy(self):
         from ..projects.llvm import BuildCheriOSLLVM
-        return BuildCheriOSLLVM.getInstallDir(self.project, cross_target=CompilationTargets.NATIVE)
+        return BuildCheriOSLLVM.get_install_dir(self.project, cross_target=CompilationTargets.NATIVE)
 
     @property
     def sysroot_dir(self):
@@ -667,7 +678,7 @@ class NewlibBaremetalTargetInfo(_ClangBasedTargetInfo):
 
     @property
     def _compiler_dir(self) -> Path:
-        # TODO: BuildUpstreamLLVM.installDir?
+        # TODO: BuildUpstreamLLVM.install_dir?
         return self.config.cheri_sdk_bindir
 
     @classmethod
@@ -721,45 +732,52 @@ class NewlibBaremetalTargetInfo(_ClangBasedTargetInfo):
 class CompilationTargets(BasicCompilationTargets):
     CHERIBSD_MIPS_NO_CHERI = CrossCompileTarget("mips-nocheri", CPUArchitecture.MIPS64, CheriBSDTargetInfo)
     CHERIBSD_MIPS_HYBRID = CrossCompileTarget("mips-hybrid", CPUArchitecture.MIPS64, CheriBSDTargetInfo,
-        is_cheri_hybrid=True, check_conflict_with=CHERIBSD_MIPS_NO_CHERI, non_cheri_target=CHERIBSD_MIPS_NO_CHERI)
+                                              is_cheri_hybrid=True, check_conflict_with=CHERIBSD_MIPS_NO_CHERI,
+                                              non_cheri_target=CHERIBSD_MIPS_NO_CHERI)
     CHERIBSD_MIPS_PURECAP = CrossCompileTarget("mips-purecap", CPUArchitecture.MIPS64, CheriBSDTargetInfo,
-        is_cheri_purecap=True, check_conflict_with=CHERIBSD_MIPS_NO_CHERI, hybrid_target=CHERIBSD_MIPS_HYBRID)
+                                               is_cheri_purecap=True, check_conflict_with=CHERIBSD_MIPS_NO_CHERI,
+                                               hybrid_target=CHERIBSD_MIPS_HYBRID)
 
     CHERIBSD_RISCV_NO_CHERI = CrossCompileTarget("riscv64", CPUArchitecture.RISCV64, CheriBSDTargetInfo)
     CHERIBSD_RISCV_HYBRID = CrossCompileTarget("riscv64-hybrid", CPUArchitecture.RISCV64, CheriBSDTargetInfo,
-        is_cheri_hybrid=True, non_cheri_target=CHERIBSD_RISCV_NO_CHERI)
+                                               is_cheri_hybrid=True, non_cheri_target=CHERIBSD_RISCV_NO_CHERI)
     CHERIBSD_RISCV_PURECAP = CrossCompileTarget("riscv64-purecap", CPUArchitecture.RISCV64, CheriBSDTargetInfo,
-        is_cheri_purecap=True, hybrid_target=CHERIBSD_RISCV_HYBRID)
-    CHERIBSD_X86_64 = CrossCompileTarget("native", CPUArchitecture.X86_64, CheriBSDTargetInfo)
+                                                is_cheri_purecap=True, hybrid_target=CHERIBSD_RISCV_HYBRID)
+    CHERIBSD_AARCH64 = CrossCompileTarget("aarch64", CPUArchitecture.AARCH64, CheriBSDTargetInfo)
+    CHERIBSD_X86_64 = CrossCompileTarget("amd64", CPUArchitecture.X86_64, CheriBSDTargetInfo)
 
     CHERIOS_MIPS_PURECAP = CrossCompileTarget("mips", CPUArchitecture.MIPS64, CheriOSTargetInfo, is_cheri_purecap=True)
 
     # Baremetal targets
     BAREMETAL_NEWLIB_MIPS64 = CrossCompileTarget("baremetal-mips", CPUArchitecture.MIPS64, NewlibBaremetalTargetInfo)
     BAREMETAL_NEWLIB_MIPS64_PURECAP = CrossCompileTarget("baremetal-mips-purecap", CPUArchitecture.MIPS64,
-        NewlibBaremetalTargetInfo, is_cheri_purecap=True, non_cheri_target=BAREMETAL_NEWLIB_MIPS64)
+                                                         NewlibBaremetalTargetInfo, is_cheri_purecap=True,
+                                                         non_cheri_target=BAREMETAL_NEWLIB_MIPS64)
     BAREMETAL_NEWLIB_RISCV64 = CrossCompileTarget("baremetal-riscv64", CPUArchitecture.RISCV64,
-        NewlibBaremetalTargetInfo, check_conflict_with=BAREMETAL_NEWLIB_MIPS64)
+                                                  NewlibBaremetalTargetInfo,
+                                                  check_conflict_with=BAREMETAL_NEWLIB_MIPS64)
     BAREMETAL_NEWLIB_RISCV64_HYBRID = CrossCompileTarget("baremetal-riscv64-hybrid", CPUArchitecture.RISCV64,
-        NewlibBaremetalTargetInfo, is_cheri_hybrid=True, non_cheri_target=BAREMETAL_NEWLIB_RISCV64)
+                                                         NewlibBaremetalTargetInfo, is_cheri_hybrid=True,
+                                                         non_cheri_target=BAREMETAL_NEWLIB_RISCV64)
     BAREMETAL_NEWLIB_RISCV64_PURECAP = CrossCompileTarget("baremetal-riscv64-purecap", CPUArchitecture.RISCV64,
-        NewlibBaremetalTargetInfo, is_cheri_purecap=True, hybrid_target=BAREMETAL_NEWLIB_RISCV64_HYBRID)
+                                                          NewlibBaremetalTargetInfo, is_cheri_purecap=True,
+                                                          hybrid_target=BAREMETAL_NEWLIB_RISCV64_HYBRID)
     # FreeBSD targets
     FREEBSD_MIPS = CrossCompileTarget("mips", CPUArchitecture.MIPS64, FreeBSDTargetInfo)
-    FREEBSD_RISCV = CrossCompileTarget("riscv", CPUArchitecture.RISCV64, FreeBSDTargetInfo)
+    FREEBSD_RISCV = CrossCompileTarget("riscv64", CPUArchitecture.RISCV64, FreeBSDTargetInfo)
     FREEBSD_I386 = CrossCompileTarget("i386", CPUArchitecture.I386, FreeBSDTargetInfo)
     FREEBSD_AARCH64 = CrossCompileTarget("aarch64", CPUArchitecture.AARCH64, FreeBSDTargetInfo)
-    FREEBSD_X86_64 = CrossCompileTarget("x86_64", CPUArchitecture.X86_64, FreeBSDTargetInfo)
+    FREEBSD_X86_64 = CrossCompileTarget("amd64", CPUArchitecture.X86_64, FreeBSDTargetInfo)
 
     # RTEMS targets
     RTEMS_RISCV64 = CrossCompileTarget("rtems-riscv64", CPUArchitecture.RISCV64, RTEMSTargetInfo)
     RTEMS_RISCV64_PURECAP = CrossCompileTarget("rtems-riscv64-purecap", CPUArchitecture.RISCV64, RTEMSTargetInfo,
-        is_cheri_purecap=True, non_cheri_target=RTEMS_RISCV64)
+                                               is_cheri_purecap=True, non_cheri_target=RTEMS_RISCV64)
 
     # TODO: test RISCV
     ALL_SUPPORTED_CHERIBSD_AND_HOST_TARGETS = [CHERIBSD_MIPS_PURECAP, CHERIBSD_MIPS_HYBRID, CHERIBSD_MIPS_NO_CHERI,
                                                CHERIBSD_RISCV_PURECAP, CHERIBSD_RISCV_HYBRID, CHERIBSD_RISCV_NO_CHERI,
-                                               BasicCompilationTargets.NATIVE]
+                                               CHERIBSD_AARCH64, BasicCompilationTargets.NATIVE]
     ALL_CHERIBSD_MIPS_AND_RISCV_TARGETS = [CHERIBSD_MIPS_HYBRID, CHERIBSD_MIPS_NO_CHERI, CHERIBSD_MIPS_PURECAP,
                                            CHERIBSD_RISCV_PURECAP, CHERIBSD_RISCV_HYBRID, CHERIBSD_RISCV_NO_CHERI]
     # Same as above, but the default is purecap RISC-V
@@ -770,5 +788,5 @@ class CompilationTargets(BasicCompilationTargets):
     ALL_SUPPORTED_BAREMETAL_TARGETS = [BAREMETAL_NEWLIB_MIPS64, BAREMETAL_NEWLIB_MIPS64_PURECAP,
                                        BAREMETAL_NEWLIB_RISCV64, BAREMETAL_NEWLIB_RISCV64_PURECAP]
     ALL_SUPPORTED_RTEMS_TARGETS = [RTEMS_RISCV64, RTEMS_RISCV64_PURECAP]
-    ALL_SUPPORTED_CHERIBSD_AND_BAREMETAL_AND_HOST_TARGETS = ALL_SUPPORTED_CHERIBSD_AND_HOST_TARGETS + \
-                                                            ALL_SUPPORTED_BAREMETAL_TARGETS
+    ALL_SUPPORTED_CHERIBSD_AND_BAREMETAL_AND_HOST_TARGETS = \
+        ALL_SUPPORTED_CHERIBSD_AND_HOST_TARGETS + ALL_SUPPORTED_BAREMETAL_TARGETS

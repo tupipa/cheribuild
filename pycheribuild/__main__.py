@@ -29,27 +29,27 @@
 #
 import fcntl
 import os
-import signal
 import shutil
+import signal
 import subprocess
 import sys
+# noinspection PyUnresolvedReferences
+from pathlib import Path
 
+from .config.defaultconfig import CheribuildAction, DefaultCheriConfig
 # First thing we need to do is set up the config loader (before importing anything else!)
 # We can't do from .configloader import ConfigLoader here because that will only update the local copy!
 # https://stackoverflow.com/questions/3536620/how-to-change-a-module-variable-from-another-module
 from .config.loader import JsonAndCommandLineConfigLoader, JsonAndCommandLineConfigOption
-from .config.defaultconfig import DefaultCheriConfig, CheribuildAction
-from .utils import (printCommand, statusUpdate, fatalError, coloured, AnsiColour, init_global_config,
-                    get_program_version, commandline_to_str, have_working_internet_connection)
-from .targets import target_manager
+# make sure all projects are loaded so that target_manager gets populated
+# noinspection PyUnresolvedReferences
+from .projects import *  # noqa: F401,F403
+# noinspection PyUnresolvedReferences
+from .projects.cross import *  # noqa: F401,F403
 from .projects.project import SimpleProject
-
-# noinspection PyUnresolvedReferences
-from .projects import *  # make sure all projects are loaded so that target_manager gets populated
-# noinspection PyUnresolvedReferences
-from .projects.cross import *  # make sure all projects are loaded so that target_manager gets populated
-
-from pathlib import Path
+from .targets import target_manager
+from .utils import (AnsiColour, coloured, commandline_to_str, fatal_error, get_program_version,
+                    have_working_internet_connection, init_global_config, print_command, run_command, status_update)
 
 DIRS_TO_CHECK_FOR_UPDATES = [Path(__file__).parent.parent]
 
@@ -67,14 +67,14 @@ def _update_check(d: Path):
         return
     # check if new commits are available
     project_dir = str(d)
-    subprocess.call(["git", "fetch"], cwd=project_dir, timeout=5)
+    run_command(["git", "fetch"], cwd=project_dir, timeout=5)
     output = subprocess.check_output(["git", "status", "-uno"], cwd=project_dir)
-    behindIndex = output.find(b"Your branch is behind ")
-    if behindIndex > 0:
-        msgEnd = output.find(b"\n  (use \"git pull\" to update your local branch)")
-        if msgEnd > 0:
-            output = output[behindIndex:msgEnd]
-        statusUpdate("Current", d.name, "checkout can be updated: ", output.decode("utf-8"))
+    behind_index = output.find(b"Your branch is behind ")
+    if behind_index > 0:
+        msg_end = output.find(b"\n  (use \"git pull\" to update your local branch)")
+        if msg_end > 0:
+            output = output[behind_index:msg_end]
+        status_update("Current", d.name, "checkout can be updated: ", output.decode("utf-8"))
         if input("Would you like to update before continuing? y/[n] (Enter to skip) ").lower().startswith("y"):
             git_version = get_program_version(Path(shutil.which("git")))
             # Use the autostash flag for Git >= 2.14
@@ -91,7 +91,7 @@ def ensure_fd_is_blocking(fd):
         fcntl.fcntl(fd, fcntl.F_SETFL, flag & ~os.O_NONBLOCK)
     flag = fcntl.fcntl(fd, fcntl.F_GETFL)
     if flag & os.O_NONBLOCK:
-        fatalError("fd", fd, "is set to nonblocking and could not unset flag")
+        fatal_error("fd", fd, "is set to nonblocking and could not unset flag")
 
 
 def real_main():
@@ -100,72 +100,75 @@ def real_main():
     ensure_fd_is_blocking(sys.stdout.fileno())
     ensure_fd_is_blocking(sys.stderr.fileno())
 
-    allTargetNames = list(sorted(target_manager.targetNames))
-    runEverythingTarget = "__run_everything__"
-    configLoader = JsonAndCommandLineConfigLoader()
+    all_target_names = list(sorted(target_manager.target_names))
+    run_everything_target = "__run_everything__"
+    config_loader = JsonAndCommandLineConfigLoader()
     # Register all command line options
-    cheriConfig = DefaultCheriConfig(configLoader, allTargetNames + [runEverythingTarget])
-    SimpleProject._configLoader = configLoader
-    target_manager.registerCommandLineOptions()
+    cheri_config = DefaultCheriConfig(config_loader, all_target_names + [run_everything_target])
+    SimpleProject._config_loader = config_loader
+    target_manager.register_command_line_options()
     # load them from JSON/cmd line
-    cheriConfig.load()
-    init_global_config(test_mode=False, pretend_mode=cheriConfig.pretend,
-        verbose_mode=cheriConfig.verbose, quiet_mode=cheriConfig.quiet)
+    cheri_config.load()
+    init_global_config(test_mode=False, pretend_mode=cheri_config.pretend,
+                       verbose_mode=cheri_config.verbose, quiet_mode=cheri_config.quiet)
 
-    if cheriConfig.docker or JsonAndCommandLineConfigLoader.get_config_prefix() == "docker-":
+    if cheri_config.docker or JsonAndCommandLineConfigLoader.get_config_prefix() == "docker-":
         # check that the docker build won't override native binaries
-        cheriConfig.docker = True
+        cheri_config.docker = True
         # get the actual descriptor
         import inspect
-        outputOption = inspect.getattr_static(cheriConfig, "outputRoot")  # type: JsonAndCommandLineConfigOption
-        sourceOption = inspect.getattr_static(cheriConfig, "sourceRoot")  # type: JsonAndCommandLineConfigOption
-        buildOption = inspect.getattr_static(cheriConfig, "buildRoot")  # type: JsonAndCommandLineConfigOption
+        output_option = inspect.getattr_static(cheri_config, "output_root")  # type: JsonAndCommandLineConfigOption
+        source_option = inspect.getattr_static(cheri_config, "source_root")  # type: JsonAndCommandLineConfigOption
+        build_option = inspect.getattr_static(cheri_config, "build_root")  # type: JsonAndCommandLineConfigOption
         # noinspection PyProtectedMember
-        if cheriConfig.buildRoot == buildOption._getDefaultValue(cheriConfig) and \
-                cheriConfig.sourceRoot == sourceOption._getDefaultValue(cheriConfig) and \
-                cheriConfig.outputRoot == outputOption._getDefaultValue(cheriConfig):
-            fatalError("Running cheribuild in docker with the default source/output/build directories is not supported")
+        if cheri_config.build_root == build_option._get_default_value(cheri_config) and \
+                cheri_config.source_root == source_option._get_default_value(cheri_config) and \
+                cheri_config.output_root == output_option._get_default_value(cheri_config):
+            fatal_error(
+                "Running cheribuild in docker with the default source/output/build directories is not supported")
 
-    if CheribuildAction.LIST_TARGETS in cheriConfig.action:
-        print("Available targets are:\n ", "\n  ".join(allTargetNames))
+    if CheribuildAction.LIST_TARGETS in cheri_config.action:
+        print("Available targets are:\n ", "\n  ".join(all_target_names))
         sys.exit()
-    elif CheribuildAction.DUMP_CONFIGURATION in cheriConfig.action:
-        print(cheriConfig.getOptionsJSON())
+    elif CheribuildAction.DUMP_CONFIGURATION in cheri_config.action:
+        print(cheri_config.get_options_json())
         sys.exit()
-    elif cheriConfig.getConfigOption:
-        if cheriConfig.getConfigOption not in configLoader.options:
-            fatalError("Unknown config key", cheriConfig.getConfigOption)
-        option = configLoader.options[cheriConfig.getConfigOption]
+    elif cheri_config.get_config_option:
+        if cheri_config.get_config_option not in config_loader.options:
+            fatal_error("Unknown config key", cheri_config.get_config_option)
+        option = config_loader.options[cheri_config.get_config_option]
         # noinspection PyProtectedMember
-        print(option.__get__(cheriConfig, option._owning_class if option._owning_class else cheriConfig))  # pytype: disable=attribute-error
+        print(option.__get__(cheri_config,
+                             option._owning_class if option._owning_class else cheri_config))  # pytype:
+        # disable=attribute-error
         sys.exit()
 
-    assert any(x in cheriConfig.action for x in (CheribuildAction.TEST, CheribuildAction.PRINT_CHOSEN_TARGETS,
-                                                 CheribuildAction.BUILD, CheribuildAction.BENCHMARK))
+    assert any(x in cheri_config.action for x in (CheribuildAction.TEST, CheribuildAction.PRINT_CHOSEN_TARGETS,
+                                                  CheribuildAction.BUILD, CheribuildAction.BENCHMARK))
 
     # create the required directories
-    for d in (cheriConfig.sourceRoot, cheriConfig.outputRoot, cheriConfig.buildRoot):
+    for d in (cheri_config.source_root, cheri_config.output_root, cheri_config.build_root):
         if d.exists():
             continue
-        if not cheriConfig.pretend:
-            if cheriConfig.verbose:
-                printCommand("mkdir", "-p", str(d))
+        if not cheri_config.pretend:
+            if cheri_config.verbose:
+                print_command("mkdir", "-p", str(d))
             os.makedirs(str(d), exist_ok=True)
 
-    if cheriConfig.docker:
+    if cheri_config.docker:
         cheribuild_dir = str(Path(__file__).absolute().parent.parent)
         # we can't pass all args
         filtered_cheribuild_args = ["--source-root", "/source", "--build-root", "/build", "--output-root", "/output"]
         skip_next = False
-        blacklisted = ("--source-root", "--build-root", "--output-root", "--docker-container")
+        excluded_args = ("--source-root", "--build-root", "--output-root", "--docker-container")
         for arg in sys.argv[1:]:
             if skip_next:
                 skip_next = False
                 continue
-            if arg in blacklisted:
+            if arg in excluded_args:
                 skip_next = True
                 continue
-            if any(arg.startswith(s + "=") for s in blacklisted):
+            if any(arg.startswith(s + "=") for s in excluded_args):
                 continue
             if arg == "--docker" or arg == "--docker-reuse-container":
                 continue
@@ -174,65 +177,67 @@ def real_main():
             docker_dir_mappings = [
                 # map cheribuild and the sources read-only into the container
                 "-v", cheribuild_dir + ":/cheribuild:ro",
-                "-v", str(cheriConfig.sourceRoot.absolute()) + ":/source:ro",
+                "-v", str(cheri_config.source_root.absolute()) + ":/source:ro",
                 # build and output are read-write:
-                "-v", str(cheriConfig.buildRoot.absolute()) + ":/build",
-                "-v", str(cheriConfig.outputRoot.absolute()) + ":/output",
-            ]
+                "-v", str(cheri_config.build_root.absolute()) + ":/build",
+                "-v", str(cheri_config.output_root.absolute()) + ":/output",
+                ]
             cheribuild_args = ["/cheribuild/cheribuild.py", "--skip-update"] + filtered_cheribuild_args
-            if cheriConfig.docker_reuse_container:
+            if cheri_config.docker_reuse_container:
                 # Use docker restart + docker exec instead of docker run
                 # FIXME: docker restart doesn't work for some reason
-                stop_cmd = ["docker", "stop", cheriConfig.docker_container]
-                printCommand(stop_cmd)
+                stop_cmd = ["docker", "stop", cheri_config.docker_container]
+                print_command(stop_cmd)
                 subprocess.check_call(stop_cmd)
-                start_cmd = ["docker", "start", cheriConfig.docker_container]
-                printCommand(start_cmd)
+                start_cmd = ["docker", "start", cheri_config.docker_container]
+                print_command(start_cmd)
                 subprocess.check_call(start_cmd)
-                docker_run_cmd = ["docker", "exec", cheriConfig.docker_container] + cheribuild_args
+                docker_run_cmd = ["docker", "exec", cheri_config.docker_container] + cheribuild_args
             else:
-                docker_run_cmd = ["docker", "run", "--rm"] + docker_dir_mappings + [cheriConfig.docker_container] + cheribuild_args
-            printCommand(docker_run_cmd)
+                docker_run_cmd = ["docker", "run", "--rm"] + docker_dir_mappings + [
+                    cheri_config.docker_container] + cheribuild_args
+            print_command(docker_run_cmd)
             subprocess.check_call(docker_run_cmd)
         except subprocess.CalledProcessError as e:
             # if the image is missing print a helpful error message:
             if e.returncode == 125:
-                statusUpdate("It seems like the docker image", cheriConfig.docker_container, "was not found.")
-                statusUpdate("In order to build the default docker image for cheribuild (cheribuild-test) run:")
-                print(coloured(AnsiColour.blue, "cd", cheribuild_dir + "/docker && docker build --tag cheribuild-test ."))
+                status_update("It seems like the docker image", cheri_config.docker_container, "was not found.")
+                status_update("In order to build the default docker image for cheribuild (cheribuild-test) run:")
+                print(
+                    coloured(AnsiColour.blue, "cd", cheribuild_dir + "/docker && docker build --tag cheribuild-test ."))
                 sys.exit(coloured(AnsiColour.red, "Failed to start docker!"))
             raise
         sys.exit()
 
-    if runEverythingTarget in cheriConfig.targets:
-        cheriConfig.targets = allTargetNames
-    if not cheriConfig.targets:
+    if run_everything_target in cheri_config.targets:
+        cheri_config.targets = all_target_names
+    if not cheri_config.targets:
         # Make --libcheri-buildenv and --buildenv without any targets imply cheribsd
-        if cheriConfig.libcompat_buildenv or cheriConfig.buildenv:
-            cheriConfig.targets.append("cheribsd")
+        if cheri_config.libcompat_buildenv or cheri_config.buildenv:
+            cheri_config.targets.append("cheribsd")
         else:
-            fatalError("At least one target name is required (see --list-targets).")
+            fatal_error("At least one target name is required (see --list-targets).")
 
-    if not cheriConfig.quiet:
-        print("Sources will be stored in", cheriConfig.sourceRoot)
-        print("Build artifacts will be stored in", cheriConfig.outputRoot)
+    if not cheri_config.quiet:
+        print("Sources will be stored in", cheri_config.source_root)
+        print("Build artifacts will be stored in", cheri_config.output_root)
     # Don't do the update check when tab-completing (otherwise it freezes)
-    if "_ARGCOMPLETE" not in os.environ and not cheriConfig.skipUpdate:  # no-combine
-        try:                                          # no-combine
-            update_check()                            # no-combine
-        except Exception as e:                        # no-combine
+    if "_ARGCOMPLETE" not in os.environ and not cheri_config.skip_update:  # no-combine
+        try:  # no-combine
+            update_check()  # no-combine
+        except Exception as e:  # no-combine
             print("Failed to check for updates:", e)  # no-combine
-    if CheribuildAction.PRINT_CHOSEN_TARGETS in cheriConfig.action:
-        for target in target_manager.get_all_chosen_targets(cheriConfig):
+    if CheribuildAction.PRINT_CHOSEN_TARGETS in cheri_config.action:
+        for target in target_manager.get_all_chosen_targets(cheri_config):
             print("Would run", target)
-    if CheribuildAction.BUILD in cheriConfig.action:
-        target_manager.run(cheriConfig)
-    if CheribuildAction.TEST in cheriConfig.action:
-        for target in target_manager.get_all_chosen_targets(cheriConfig):
-            target.run_tests(cheriConfig)
-    if CheribuildAction.BENCHMARK in cheriConfig.action:
-        for target in target_manager.get_all_chosen_targets(cheriConfig):
-            target.run_benchmarks(cheriConfig)
+    if CheribuildAction.BUILD in cheri_config.action:
+        target_manager.run(cheri_config)
+    if CheribuildAction.TEST in cheri_config.action:
+        for target in target_manager.get_all_chosen_targets(cheri_config):
+            target.run_tests(cheri_config)
+    if CheribuildAction.BENCHMARK in cheri_config.action:
+        for target in target_manager.get_all_chosen_targets(cheri_config):
+            target.run_benchmarks(cheri_config)
 
 
 def main():
@@ -247,8 +252,8 @@ def main():
     except subprocess.CalledProcessError as err:
         error = True
         cwd = (". Working directory was ", err.cwd) if hasattr(err, "cwd") else ()
-        fatalError("Command ", "`" + commandline_to_str(err.cmd) + "` failed with non-zero exit code ",
-                   err.returncode, *cwd, fatalWhenPretending=True, sep="", exit_code=err.returncode)
+        fatal_error("Command ", "`" + commandline_to_str(err.cmd) + "` failed with non-zero exit code ",
+                    err.returncode, *cwd, fatal_when_pretending=True, sep="", exit_code=err.returncode)
     finally:
         if error:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -257,4 +262,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

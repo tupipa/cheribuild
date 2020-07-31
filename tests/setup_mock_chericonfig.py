@@ -19,30 +19,30 @@ class MockActions(Enum):
 class MockConfig(CheriConfig):
     def __init__(self, source_root: Path, pretend=True):  # allow overriding pretend for the async_delete test
         self.fake_loader = DefaultValueOnlyConfigLoader()
-        self.fake_loader._parsedArgs = MockArgs()
+        self.fake_loader._parsed_args = MockArgs()
         super().__init__(self.fake_loader, action_class=MockActions)
         self.default_action = ""
-        self.sourceRoot = source_root
-        self.buildRoot = source_root / "build"
-        self.outputRoot = source_root / "output"
-        self.cheribsd_image_root = self.outputRoot
+        self.source_root = source_root
+        self.build_root = source_root / "build"
+        self.output_root = source_root / "output"
+        self.cheribsd_image_root = self.output_root
         self.pretend = pretend
         self.clean = True
         self.verbose = True
         self.debug_output = True
         self.quiet = False
-        self.skipUpdate = True
-        self.skipInstall = True
-        self.skipClone = True
-        self.skipConfigure = True
-        self.forceConfigure = False
-        self.includeDependencies = False
+        self.skip_update = True
+        self.skip_install = True
+        self.skip_clone = True
+        self.skip_configure = True
+        self.force_configure = False
+        self.include_dependencies = False
         self.create_compilation_db = False
         self.copy_compilation_db_to_source_dir = False
         self.preferred_xtarget = None
         self.mips_cheri_bits = 128
-        self.makeJobs = 2
-        self.makeWithoutNice = True
+        self.make_jobs = 2
+        self.make_without_nice = True
         self.force_update = False
         self.force = True
         self.write_logfile = True
@@ -50,11 +50,11 @@ class MockConfig(CheriConfig):
         self.load()
 
         # for the async delete test:
-        self.sourceRoot = source_root
-        self.buildRoot = source_root / "build"
-        self.outputRoot = source_root / "output"
-        self.cheri_sdk_dir = self.outputRoot / "sdk"
-        self.otherToolsDir = self.outputRoot / "other"
+        self.source_root = source_root
+        self.build_root = source_root / "build"
+        self.output_root = source_root / "output"
+        self.cheri_sdk_dir = self.output_root / "sdk"
+        self.other_tools_dir = self.output_root / "other"
 
         assert self._ensure_required_properties_set()
 
@@ -63,10 +63,10 @@ def setup_mock_chericonfig(source_root: Path, pretend=True) -> MockConfig:
     config = MockConfig(source_root, pretend)
     # noinspection PyTypeChecker
     init_global_config(test_mode=True, pretend_mode=config.pretend,
-        verbose_mode=config.verbose, quiet_mode=config.quiet)
-    ConfigLoaderBase._cheriConfig = config
-    SimpleProject._configLoader = DefaultValueOnlyConfigLoader()
-    SimpleProject._configLoader._cheriConfig = config
+                       verbose_mode=config.verbose, quiet_mode=config.quiet)
+    ConfigLoaderBase._cheri_config = config
+    SimpleProject._config_loader = DefaultValueOnlyConfigLoader()
+    SimpleProject._config_loader._cheri_config = config
     Target.instantiating_targets_should_warn = False
     # FIXME: There should only be one singleton instance
     return config

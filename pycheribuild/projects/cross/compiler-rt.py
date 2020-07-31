@@ -28,6 +28,7 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
+from pycheribuild.projects.llvm import BuildUpstreamLLVM
 from .crosscompileproject import CheriConfig, CompilationTargets, CrossCompileCMakeProject, DefaultInstallDir
 from ..llvm import BuildCheriLLVM
 from ..project import ReuseOtherProjectDefaultTargetRepository
@@ -36,30 +37,34 @@ from ...utils import classproperty, is_jenkins_build
 
 class BuildCompilerRt(CrossCompileCMakeProject):
     # TODO: add an option to allow upstream llvm?
-    repository = ReuseOtherProjectDefaultTargetRepository(BuildCheriLLVM, subdirectory="compiler-rt")
+    llvm_project = BuildCheriLLVM
+    repository = ReuseOtherProjectDefaultTargetRepository(llvm_project, subdirectory="compiler-rt")
     project_name = "compiler-rt"
     default_install_dir = DefaultInstallDir.COMPILER_RESOURCE_DIR
     _check_install_dir_conflict = False
-    supported_architectures = CompilationTargets.ALL_SUPPORTED_CHERIBSD_AND_HOST_TARGETS + \
-                              CompilationTargets.ALL_SUPPORTED_BAREMETAL_TARGETS + \
-                              CompilationTargets.ALL_SUPPORTED_RTEMS_TARGETS
+    supported_architectures = \
+        CompilationTargets.ALL_SUPPORTED_CHERIBSD_AND_HOST_TARGETS + \
+        CompilationTargets.ALL_SUPPORTED_BAREMETAL_TARGETS + \
+        CompilationTargets.ALL_SUPPORTED_RTEMS_TARGETS
 
-    def __init__(self, config: CheriConfig):
-        super().__init__(config)
+    def setup(self):
+        super().setup()
 
         if self.target_info.is_rtems() or self.target_info.is_baremetal():
-            self.add_cmake_options(CMAKE_TRY_COMPILE_TARGET_TYPE="STATIC_LIBRARY") # RTEMS only needs static libs
+            self.add_cmake_options(CMAKE_TRY_COMPILE_TARGET_TYPE="STATIC_LIBRARY")  # RTEMS only needs static libs
             # Get default target (arch) from the triple
             self.add_cmake_options(COMPILER_RT_DEFAULT_TARGET_ARCH=self.target_info.target_triple.split('-')[0])
 
         self.add_cmake_options(
-            LLVM_CONFIG_PATH=self.sdk_bindir / "llvm-config" if is_jenkins_build() and not self.compiling_for_host() else
-              BuildCheriLLVM.getBuildDir(self, cross_target=CompilationTargets.NATIVE) / "bin/llvm-config",
-            LLVM_EXTERNAL_LIT=self.sdk_bindir/ "llvm-lit" if is_jenkins_build() and not self.compiling_for_host() else
-              BuildCheriLLVM.getBuildDir(self, cross_target=CompilationTargets.NATIVE) / "bin/llvm-lit",
+            LLVM_CONFIG_PATH=self.sdk_bindir / "llvm-config" if is_jenkins_build() and not self.compiling_for_host()
+            else
+            self.llvm_project.get_build_dir(self, cross_target=CompilationTargets.NATIVE) / "bin/llvm-config",
+            LLVM_EXTERNAL_LIT=self.sdk_bindir / "llvm-lit" if is_jenkins_build() and not self.compiling_for_host() else
+            self.llvm_project.get_build_dir(self, cross_target=CompilationTargets.NATIVE) / "bin/llvm-lit",
             COMPILER_RT_BUILD_BUILTINS=True,
             COMPILER_RT_BUILD_SANITIZERS=True,
             COMPILER_RT_BUILD_XRAY=False,
+            COMPILER_RT_INCLUDE_TESTS=True,
             COMPILER_RT_BUILD_LIBFUZZER=True,
             COMPILER_RT_BUILD_PROFILE=False,
             COMPILER_RT_BAREMETAL_BUILD=self.target_info.is_baremetal(),
@@ -67,7 +72,7 @@ class BuildCompilerRt(CrossCompileCMakeProject):
             # BUILTIN_SUPPORTED_ARCH="mips64",
             TARGET_TRIPLE=self.target_info.target_triple,
             # LLVM_ENABLE_PER_TARGET_RUNTIME_DIR=True,
-        )
+            )
         if self.should_include_debug_info:
             self.add_cmake_options(COMPILER_RT_DEBUG=True)
 
@@ -80,35 +85,50 @@ class BuildCompilerRt(CrossCompileCMakeProject):
         if self.compiling_for_cheri():
             # HACK: we don't really need the ubsan runtime but the toolchain pulls it in automatically
             # TODO: is there an easier way to create an empty archive?
-            ubsan_runtime_path = self.installDir / ("lib/freebsd/libclang_rt.ubsan_standalone-mips64c" + self.config.mips_cheri_bits_str + ".a")
+            ubsan_runtime_path = self.install_dir / (
+                    "lib/freebsd/libclang_rt.ubsan_standalone-mips64c" + self.config.mips_cheri_bits_str + ".a")
             if not ubsan_runtime_path.exists():
                 self.warning("Did not install ubsan runtime", ubsan_runtime_path)
         if self.target_info.is_rtems():
-            rt_runtime_path = self.installDir / "lib/generic/libclang_rt.builtins-riscv64.a"
+            rt_runtime_path = self.install_dir / "lib/generic/libclang_rt.builtins-riscv64.a"
             if not rt_runtime_path.exists():
                 self.warning("Did not install compiler runtime", rt_runtime_path.exists)
             else:
                 print(self.target_info.sysroot_dir)
-                self.createSymlink(rt_runtime_path, self.target_info.sysroot_dir / "lib/libclang_rt.builtins-riscv64.a")
+                self.create_symlink(rt_runtime_path,
+                                    self.target_info.sysroot_dir / "lib/libclang_rt.builtins-riscv64.a")
+
+    def run_tests(self):
+        self.run_make("check-compiler-rt")
+
+
+class BuildUpstreamCompilerRt(BuildCompilerRt):
+    llvm_project = BuildUpstreamLLVM
+    repository = ReuseOtherProjectDefaultTargetRepository(llvm_project, subdirectory="compiler-rt")
+    project_name = "upstream-compiler-rt"
+    # TODO: default_install_dir = DefaultInstallDir.COMPILER_RESOURCE_DIR
+    default_install_dir = DefaultInstallDir.IN_BUILD_DIRECTORY
+    supported_architectures = [CompilationTargets.NATIVE]
 
 
 class BuildCompilerRtBuiltins(CrossCompileCMakeProject):
     # TODO: add an option to allow upstream llvm?
-    repository = ReuseOtherProjectDefaultTargetRepository(BuildCheriLLVM, subdirectory="compiler-rt")
+    llvm_project = BuildCheriLLVM
+    repository = ReuseOtherProjectDefaultTargetRepository(llvm_project, subdirectory="compiler-rt")
     project_name = "compiler-rt-builtins"
     _check_install_dir_conflict = False
     is_sdk_target = True
     dependencies = ["newlib"]
     needs_sysroot = False  # We don't need a complete sysroot
-    supported_architectures = CompilationTargets.ALL_SUPPORTED_BAREMETAL_TARGETS + \
-                              CompilationTargets.ALL_SUPPORTED_RTEMS_TARGETS
+    supported_architectures = \
+        CompilationTargets.ALL_SUPPORTED_BAREMETAL_TARGETS + CompilationTargets.ALL_SUPPORTED_RTEMS_TARGETS
     _default_architecture = CompilationTargets.BAREMETAL_NEWLIB_MIPS64
 
     # Note: needs to be @classproperty since it is called before __init__
     @classproperty
-    def default_install_dir(cls):
+    def default_install_dir(self):
         # Install compiler-rt to the sysroot to handle purecap and non-CHERI RTEMS
-        if cls._xtarget is CompilationTargets.RTEMS_RISCV64_PURECAP:
+        if self._xtarget is CompilationTargets.RTEMS_RISCV64_PURECAP:
             return DefaultInstallDir.SYSROOT
         return DefaultInstallDir.COMPILER_RESOURCE_DIR
 
@@ -125,10 +145,11 @@ class BuildCompilerRtBuiltins(CrossCompileCMakeProject):
             self.add_cmake_options(CMAKE_TRY_COMPILE_TARGET_TYPE="STATIC_LIBRARY")  # RTEMS only needs static libs
 
         self.add_cmake_options(
-            LLVM_CONFIG_PATH=self.sdk_bindir / "llvm-config" if is_jenkins_build() and not self.compiling_for_host() else
-              BuildCheriLLVM.getBuildDir(self, cross_target=CompilationTargets.NATIVE) / "bin/llvm-config",
-            LLVM_EXTERNAL_LIT=self.sdk_bindir/ "llvm-lit" if is_jenkins_build() and not self.compiling_for_host() else
-              BuildCheriLLVM.getBuildDir(self, cross_target=CompilationTargets.NATIVE) / "bin/llvm-lit",
+            LLVM_CONFIG_PATH=self.sdk_bindir / "llvm-config" if is_jenkins_build() and not self.compiling_for_host()
+            else
+            self.llvm_project.get_build_dir(self, cross_target=CompilationTargets.NATIVE) / "bin/llvm-config",
+            LLVM_EXTERNAL_LIT=self.sdk_bindir / "llvm-lit" if is_jenkins_build() and not self.compiling_for_host() else
+            self.llvm_project.get_build_dir(self, cross_target=CompilationTargets.NATIVE) / "bin/llvm-lit",
             COMPILER_RT_BUILD_BUILTINS=True,
             COMPILER_RT_BUILD_SANITIZERS=False,
             COMPILER_RT_BUILD_XRAY=False,
@@ -138,7 +159,7 @@ class BuildCompilerRtBuiltins(CrossCompileCMakeProject):
             COMPILER_RT_DEFAULT_TARGET_ONLY=True,
             # BUILTIN_SUPPORTED_ARCH="mips64",
             TARGET_TRIPLE=self.target_info.target_triple,
-        )
+            )
         if self.should_include_debug_info:
             self.add_cmake_options(COMPILER_RT_DEBUG=True)
         if self.compiling_for_mips(include_purecap=True):
@@ -146,7 +167,7 @@ class BuildCompilerRtBuiltins(CrossCompileCMakeProject):
             self.add_cmake_options(COMPILER_RT_DEFAULT_TARGET_ONLY=True)
 
     def configure(self, **kwargs):
-        self.configureArgs[0] = str(self.sourceDir / "lib/builtins")
+        self.configure_args[0] = str(self.source_dir / "lib/builtins")
         super().configure()
 
     def install(self, **kwargs):
@@ -155,18 +176,20 @@ class BuildCompilerRtBuiltins(CrossCompileCMakeProject):
         libname = "libclang_rt.builtins-" + self.triple_arch + ".a"
 
         if self.target_info.is_rtems():
-            self.moveFile(self.installDir / "lib/rtems5" / libname, self.installDir / "lib" / libname)
+            self.move_file(self.install_dir / "lib/rtems5" / libname, self.install_dir / "lib" / libname)
         else:
-            self.moveFile(self.installDir / "lib/generic" / libname, self.real_install_root_dir / "lib" / libname)
+            self.move_file(self.install_dir / "lib/generic" / libname, self.real_install_root_dir / "lib" / libname)
 
             if self.compiling_for_cheri():
                 # compatibility with older compilers
-                self.createSymlink(self.real_install_root_dir / "lib" / libname,
-                                   self.real_install_root_dir / "lib" / "libclang_rt.builtins-cheri.a", print_verbose_only=False)
-                self.createSymlink(self.real_install_root_dir / "lib" / libname,
-                                   self.real_install_root_dir / "lib" / "libclang_rt.builtins-mips64.a", print_verbose_only=False)
+                self.create_symlink(self.real_install_root_dir / "lib" / libname,
+                                    self.real_install_root_dir / "lib" / "libclang_rt.builtins-cheri.a",
+                                    print_verbose_only=False)
+                self.create_symlink(self.real_install_root_dir / "lib" / libname,
+                                    self.real_install_root_dir / "lib" / "libclang_rt.builtins-mips64.a",
+                                    print_verbose_only=False)
             # HACK: we don't really need libunwind but the toolchain pulls it in automatically
             # TODO: is there an easier way to create empty .a files?
-            self.run_cmd("ar", "rcv", self.installDir / "lib/libunwind.a", "/dev/null")
-            self.run_cmd("ar", "dv", self.installDir / "lib/libunwind.a", "null")
-            self.run_cmd("ar", "t", self.installDir / "lib/libunwind.a")  # should be empty now
+            self.run_cmd("ar", "rcv", self.install_dir / "lib/libunwind.a", "/dev/null")
+            self.run_cmd("ar", "dv", self.install_dir / "lib/libunwind.a", "null")
+            self.run_cmd("ar", "t", self.install_dir / "lib/libunwind.a")  # should be empty now
